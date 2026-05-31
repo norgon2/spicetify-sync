@@ -16,6 +16,7 @@
   let isConnected  = false;
   let reconnecting = false;
   let cohostMode   = false;
+  let roomCode     = localStorage.getItem("sync_roomCode") || "";
 
   let suppressCount = 0;
   function suppressFor(ms) {
@@ -46,6 +47,9 @@
       appName: "Spicetify Sync",
       server: "Server", serverPh: "localhost or ngrok URL",
       username: "Username", usernamePh: "Your name",
+      roomCode: "Room Code", roomCodePh: "6-char code (guests only)",
+      yourCode: "Your room code", copyCode: "Copy",
+      codeCopied: "Code copied!",
       host: "Host", guest: "Guest",
       disconnect: "Disconnect", cancel: "Cancel",
       statusHost: "You are the host",
@@ -66,6 +70,9 @@
       appName: "Spicetify Sync",
       server: "Serveur", serverPh: "localhost ou URL ngrok",
       username: "Nom d’utilisateur", usernamePh: "Votre nom",
+      roomCode: "Code de room", roomCodePh: "Code à 6 caractères (invités)",
+      yourCode: "Votre code de room", copyCode: "Copier",
+      codeCopied: "Code copié !",
       host: "Hôte", guest: "Invité",
       disconnect: "Déconnecter", cancel: "Annuler",
       statusHost: "Vous êtes l’hôte",
@@ -144,7 +151,7 @@
         isConnected  = true;
         role         = selectedRole;
         reconnecting = false;
-        socket.emit("register", { role, username });
+        socket.emit("register", { role, username, roomCode });
         updateButtonState();
         const disc = document.querySelector("#sync-panel #sync-disconnect-btn");
         if (disc && disc.textContent === t("cancel")) disc.textContent = t("disconnect");
@@ -206,6 +213,18 @@
               : "Co-host mode OFF."
           );
         }
+      });
+
+      socket.on("room_created", ({ code } = {}) => {
+        if (!code) return;
+        roomCode = code;
+        localStorage.setItem("sync_roomCode", code);
+        const p = getPanel();
+        if (!p) return;
+        const codeEl = qs(p, "#sync-host-room-code");
+        if (codeEl) codeEl.textContent = code;
+        const section = qs(p, "#sync-host-code-section");
+        if (section) section.style.display = "block";
       });
 
       socket.on("waiting_for_host", () => setWaitingPanelUI());
@@ -463,6 +482,7 @@
     qs(p, "#sync-connect-btns").style.display    = "flex";
     qs(p, "#sync-status-section").style.display  = "none";
     qs(p, "#sync-room-info").style.display       = "none";
+    qs(p, "#sync-host-code-section").style.display = "none";
     const disc = qs(p, "#sync-disconnect-btn");
     disc.style.display = "none";
     disc.textContent   = t("disconnect");
@@ -481,6 +501,14 @@
     st.style.color = r === "host" ? "var(--spice-button, #1db954)" : "#1e90ff";
     qs(p, "#sync-cohost-row").style.display        = r === "host" ? "flex" : "none";
     qs(p, "#sync-guest-cohost-note").style.display = "none";
+    const hcs = qs(p, "#sync-host-code-section");
+    if (r === "host" && roomCode) {
+      const codeEl = qs(p, "#sync-host-room-code");
+      if (codeEl) codeEl.textContent = roomCode;
+      hcs.style.display = "block";
+    } else {
+      hcs.style.display = "none";
+    }
   }
 
   function setReconnectingPanelUI(attempt) {
@@ -497,6 +525,7 @@
     qs(p, "#sync-cohost-row").style.display        = "none";
     qs(p, "#sync-guest-cohost-note").style.display = "none";
     qs(p, "#sync-room-info").style.display         = "none";
+    qs(p, "#sync-host-code-section").style.display = "none";
   }
 
   function setWaitingPanelUI() {
@@ -784,6 +813,13 @@
         onfocus="this.style.borderColor='rgba(255,255,255,0.25)'"
         onblur="this.style.borderColor='rgba(255,255,255,0.08)'"/>
     </div>
+    <div>
+      <span style="${LBL}">${t("roomCode")}</span>
+      <input id="sync-room-code" type="text" placeholder="${t("roomCodePh")}" style="${INP}" maxlength="6"
+        onfocus="this.style.borderColor='rgba(255,255,255,0.25)'"
+        onblur="this.style.borderColor='rgba(255,255,255,0.08)'"
+        oninput="this.value=this.value.toUpperCase().replace(/[^A-Z0-9]/g,'')"/>
+    </div>
   </div>
   <div id="sync-connect-btns" style="display:flex;gap:6px">
     <button id="sync-host-btn" style="${BTN_PRI}"
@@ -795,6 +831,12 @@
   </div>
   <div id="sync-status-section" style="display:none;flex-direction:column;gap:10px">
     <div id="sync-status-text" style="font-size:13px;font-weight:600;color:var(--spice-button,#1db954)">…</div>
+    <div id="sync-host-code-section" style="display:none;padding:10px 12px;background:rgba(29,185,84,0.07);border:1px solid rgba(29,185,84,0.2);border-radius:8px;text-align:center">
+      <div style="font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--spice-subtext,#a7a7a7);margin-bottom:8px">${t("yourCode")}</div>
+      <div id="sync-host-room-code" style="font-size:26px;font-weight:900;letter-spacing:0.25em;color:var(--spice-button,#1db954);font-family:monospace">______</div>
+      <button id="sync-copy-code-btn" style="margin-top:8px;padding:4px 14px;background:transparent;border:1px solid rgba(29,185,84,0.4);border-radius:50px;color:var(--spice-button,#1db954);font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;transition:background 0.15s"
+        onmouseover="this.style.background='rgba(29,185,84,0.12)'" onmouseout="this.style.background='transparent'">${t("copyCode")}</button>
+    </div>
     <div id="sync-cohost-row" style="display:none;${SROW}">
       <div style="flex:1;min-width:0;margin-right:10px">
         <div style="font-size:12px;font-weight:600;margin-bottom:2px">${t("cohostLabel")}</div>
@@ -846,19 +888,26 @@
 
     document.body.appendChild(panel);
 
-    qs(panel, "#sync-ip").value       = serverIP;
-    qs(panel, "#sync-username").value = username;
+    qs(panel, "#sync-ip").value        = serverIP;
+    qs(panel, "#sync-username").value  = username;
+    qs(panel, "#sync-room-code").value = roomCode;
 
     function saveInputs() {
       serverIP = qs(panel, "#sync-ip").value.trim() || "localhost";
       username = qs(panel, "#sync-username").value.trim() || "User";
+      roomCode = qs(panel, "#sync-room-code").value.trim().toUpperCase();
       localStorage.setItem("sync_serverIP", serverIP);
       localStorage.setItem("sync_username", username);
+      localStorage.setItem("sync_roomCode", roomCode);
     }
 
     qs(panel, "#sync-host-btn").addEventListener("click", () => { saveInputs(); connect("host"); });
     qs(panel, "#sync-guest-btn").addEventListener("click", () => { saveInputs(); connect("guest"); });
     qs(panel, "#sync-disconnect-btn").addEventListener("click", () => { disconnect(); resetPanelUI(); });
+    qs(panel, "#sync-copy-code-btn").addEventListener("click", () => {
+      if (!roomCode) return;
+      navigator.clipboard.writeText(roomCode).then(() => showNotification(t("codeCopied"))).catch(() => {});
+    });
     qs(panel, "#sync-panel-close").addEventListener("click", () => closePanel());
 
     qs(panel, "#sync-settings-btn").addEventListener("click", () => {
