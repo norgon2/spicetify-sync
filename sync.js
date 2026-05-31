@@ -21,6 +21,7 @@
   let lastGuestCount = null;
   let guestCount     = 0;
   let lastRoomInfo   = { hosts: 0, guests: 0, connected: 0 };
+  let waitingForHost = false;
 
   let suppressCount = 0;
   function suppressFor(ms) {
@@ -40,7 +41,7 @@
     lang:        localStorage.getItem("sync_lang") || "auto",
     showCode:    localStorage.getItem("sync_showCode") === "true",
     volumeSync:  localStorage.getItem("sync_volumeSync") === "true",
-    syncDelay:   parseInt(localStorage.getItem("sync_syncDelay") || "0", 10),
+    syncDelay:   parseInt(localStorage.getItem("sync_syncDelay") || "0", 10) || 0,
     soundNotif:  localStorage.getItem("sync_soundNotif") !== "false",
   };
   function saveSetting(key, value) {
@@ -191,6 +192,7 @@
     lastGuestCount  = null;
     guestCount      = 0;
     lastRoomInfo    = { hosts: 0, guests: 0, connected: 0 };
+    waitingForHost  = false;
 
     loadSocketIO(() => {
       const isLocal = serverIP === "localhost" || serverIP === "127.0.0.1";
@@ -221,6 +223,7 @@
       });
 
       socket.on("registered", ({ role: r }) => {
+        waitingForHost = false;
         showNotification(t("connectedAs", r, username));
         setConnectedPanelUI(r);
         if (r === "guest") socket.emit("request_sync");
@@ -296,9 +299,10 @@
         if (section) section.style.display = "block";
       });
 
-      socket.on("waiting_for_host", () => setWaitingPanelUI());
+      socket.on("waiting_for_host", () => { waitingForHost = true; setWaitingPanelUI(); });
 
       socket.on("host_connected", () => {
+        waitingForHost = false;
         if (role === "guest" && isConnected) {
           socket.emit("request_sync");
           showNotification(t("hostConnected"));
@@ -377,7 +381,7 @@
 
       let syncSeq = 0;
       socket.on("sync_state", async ({ uri, position, isPlaying, contextUri, sentAt } = {}) => {
-        if (role !== "guest" || !uri) return;
+        if (role !== "guest" || !uri || position == null) return;
         const seq = ++syncSeq;
         suppressFor(1500);
         try {
@@ -395,15 +399,16 @@
             } catch (_) {
               try { await Player.playUri(uri, {}, { seekTo: adjPos }); } catch (_) {}
             }
+            if (seq !== syncSeq) return;
             resetSeekBaseline(adjPos);
-            if (!isPlaying && seq === syncSeq) {
+            if (!isPlaying) {
               await new Promise((r) => setTimeout(r, 800));
               if (seq === syncSeq) await Player.pause();
             }
           } else {
             await Player.seek(adjPos);
-            resetSeekBaseline(adjPos);
             if (seq !== syncSeq) return;
+            resetSeekBaseline(adjPos);
             if (isPlaying) {
               await Player.play();
             } else {
@@ -445,6 +450,7 @@
     lastGuestCount = null;
     guestCount     = 0;
     lastRoomInfo   = { hosts: 0, guests: 0, connected: 0 };
+    waitingForHost = false;
     stopSeekPoll();
     if (socket) { socket.disconnect(); socket = null; }
     isConnected = false;
@@ -485,7 +491,7 @@
         return;
       }
       const paused = state.isPaused;
-      if (suppressCount > 0) { seekPollTime = now; return; }
+      if (suppressCount > 0) { seekPollPos = pos; seekPollTime = now; return; }
       if (seekPollPos !== null) {
         const elapsed   = paused ? 0 : now - seekPollTime;
         const expected  = seekPollPos + elapsed;
@@ -639,7 +645,7 @@
   function updateRoomInfo(hosts, guests, connected) {
     const p = getPanel(); if (!p) return;
     const ri = qs(p, "#sync-room-info");
-    if (!isConnected) { ri.style.display = "none"; return; }
+    if (!isConnected || waitingForHost) { ri.style.display = "none"; return; }
     ri.style.display = "flex";
     ri.innerHTML =
       `<span style="color:var(--spice-button,#1db954)">${hosts} host${hosts !== 1 ? "s" : ""}</span>` +
@@ -1160,6 +1166,7 @@
 
     if (isConnected) {
       setConnectedPanelUI(role);
+      updateRoomInfo(lastRoomInfo.hosts, lastRoomInfo.guests, lastRoomInfo.connected);
       qs(panel, "#sync-cohost-toggle").checked = cohostMode;
       if (role === "guest" && cohostMode) qs(panel, "#sync-guest-cohost-note").style.display = "block";
     } else if (reconnecting) {
