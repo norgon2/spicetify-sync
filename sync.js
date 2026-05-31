@@ -9,14 +9,18 @@
   // --------------------------------------------------------------------------
   // State
   // --------------------------------------------------------------------------
-  let socket       = null;
-  let role         = null;
-  let serverIP     = localStorage.getItem("sync_serverIP") || "spicetify-sync-server.onrender.com";
-  let username     = localStorage.getItem("sync_username") || "User";
-  let isConnected  = false;
-  let reconnecting = false;
-  let cohostMode   = false;
-  let roomCode     = localStorage.getItem("sync_roomCode") || "";
+  let socket         = null;
+  let role           = null;
+  let serverIP       = localStorage.getItem("sync_serverIP") || "spicetify-sync-server.onrender.com";
+  let username       = localStorage.getItem("sync_username") || "User";
+  let isConnected    = false;
+  let reconnecting   = false;
+  let cohostMode     = false;
+  let roomCode       = localStorage.getItem("sync_roomCode") || "";
+  let lastVolume     = null;
+  let lastGuestCount = null;
+  let guestCount     = 0;
+  let lastRoomInfo   = { hosts: 0, guests: 0, connected: 0 };
 
   let suppressCount = 0;
   function suppressFor(ms) {
@@ -32,10 +36,12 @@
   // Settings + i18n
   // --------------------------------------------------------------------------
   const settings = {
-    autoConnect:   localStorage.getItem("sync_autoConnect") === "true",
-    lang:          localStorage.getItem("sync_lang") || "auto",
-    latencyComp:   true,
-    notifications: localStorage.getItem("sync_notifications") !== "false",
+    autoConnect: localStorage.getItem("sync_autoConnect") === "true",
+    lang:        localStorage.getItem("sync_lang") || "auto",
+    showCode:    localStorage.getItem("sync_showCode") === "true",
+    volumeSync:  localStorage.getItem("sync_volumeSync") === "true",
+    syncDelay:   parseInt(localStorage.getItem("sync_syncDelay") || "0", 10),
+    soundNotif:  localStorage.getItem("sync_soundNotif") !== "false",
   };
   function saveSetting(key, value) {
     localStorage.setItem(`sync_${key}`, String(value));
@@ -64,30 +70,44 @@
       autoConnect: "Auto-connect", autoConnectDesc: "Reconnect on Spotify start",
       language: "Language",
       langAuto: "Auto (system)", langFr: "Français", langEn: "English",
-      notifs: "Notifications", notifsDesc: "Show status notifications",
+      showCode: "Show code in toolbar", showCodeDesc: "Display active room code next to the button",
+      volumeSync: "Volume sync", volumeSyncDesc: "Sync volume between host and guests",
+      syncDelay: "Sync delay (ms)", syncDelayDesc: "Extra offset to compensate custom latency",
+      soundNotif: "Notification sounds", soundNotifDesc: "Play a sound when guests join or leave",
+      sectionGeneral: "General", sectionSession: "Session",
+      connectedAs: (r, name) => `Connected as ${r} (${name})`,
+      cohostModeOn: "Co-host mode ON — you can now control playback.",
+      cohostModeOff: "Co-host mode OFF.",
     },
     fr: {
       appName: "Spicetify Sync",
       server: "Serveur", serverPh: "localhost ou URL ngrok",
-      username: "Nom d’utilisateur", usernamePh: "Votre nom",
+      username: "Nom d'utilisateur", usernamePh: "Votre nom",
       roomCode: "Code de room", roomCodePh: "Code à 6 caractères (invités)",
       yourCode: "Votre code de room", copyCode: "Copier",
       codeCopied: "Code copié !",
       host: "Hôte", guest: "Invité",
       disconnect: "Déconnecter", cancel: "Annuler",
-      statusHost: "Vous êtes l’hôte",
-      statusGuest: "Connecté en tant qu’invité",
+      statusHost: "Vous êtes l'hôte",
+      statusGuest: "Connecté en tant qu'invité",
       statusCohost: "Connecté — mode co-hôte",
       statusRecon: "Reconnexion…",
       statusReconN: (n) => `Reconnexion… (tentative ${n})`,
-      statusWaiting: "En attente de l’hôte…",
+      statusWaiting: "En attente de l'hôte…",
       cohostLabel: "Mode co-hôte", cohostDesc: "Les invités contrôlent la lecture",
       cohostNote: "Vous pouvez contrôler la lecture pour tous.",
       settingsTitle: "Paramètres", back: "← Retour",
       autoConnect: "Connexion automatique", autoConnectDesc: "Se reconnecter au démarrage",
       language: "Langue",
       langAuto: "Auto (système)", langFr: "Français", langEn: "English",
-      notifs: "Notifications", notifsDesc: "Afficher les notifications d’état",
+      showCode: "Afficher le code dans la barre", showCodeDesc: "Affiche le code de room actif à côté du bouton",
+      volumeSync: "Sync du volume", volumeSyncDesc: "Synchronise le volume entre hôte et invités",
+      syncDelay: "Délai de sync (ms)", syncDelayDesc: "Décalage supplémentaire pour compenser la latence",
+      soundNotif: "Sons de notification", soundNotifDesc: "Joue un son quand un invité rejoint ou quitte",
+      sectionGeneral: "Général", sectionSession: "Session",
+      connectedAs: (r, name) => `Connecté en tant que ${r} (${name})`,
+      cohostModeOn: "Mode co-hôte activé — vous pouvez contrôler la lecture.",
+      cohostModeOff: "Mode co-hôte désactivé.",
     },
   };
   function getLang() {
@@ -99,6 +119,33 @@
     const lang = getLang();
     const v = (I18N[lang] ?? I18N.en)[key] ?? I18N.en[key] ?? key;
     return typeof v === "function" ? v(...args) : v;
+  }
+
+  // --------------------------------------------------------------------------
+  // Web Audio beep
+  // --------------------------------------------------------------------------
+  function playBeep(join) {
+    if (!settings.soundNotif) return;
+    try {
+      const ctx  = new (window.AudioContext || window.webkitAudioContext)();
+      const osc  = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = "sine";
+      if (join) {
+        osc.frequency.setValueAtTime(880, ctx.currentTime);
+        osc.frequency.setValueAtTime(1100, ctx.currentTime + 0.08);
+      } else {
+        osc.frequency.setValueAtTime(660, ctx.currentTime);
+        osc.frequency.setValueAtTime(440, ctx.currentTime + 0.08);
+      }
+      gain.gain.setValueAtTime(0.12, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.22);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.22);
+      osc.onended = () => ctx.close();
+    } catch (_) {}
   }
 
   // --------------------------------------------------------------------------
@@ -127,9 +174,14 @@
   // Connection
   // --------------------------------------------------------------------------
   function connect(selectedRole) {
-    localStorage.setItem("sync_lastRole", selectedRole); // for auto-connect
+    localStorage.setItem("sync_lastRole", selectedRole);
+    stopSeekPoll();
     if (socket) { socket.disconnect(); socket = null; }
-    reconnecting = false;
+    reconnecting    = false;
+    cohostMode      = false;
+    lastVolume      = null;
+    lastGuestCount  = null;
+    guestCount      = 0;
 
     loadSocketIO(() => {
       const isLocal = serverIP === "localhost" || serverIP === "127.0.0.1";
@@ -151,14 +203,16 @@
         isConnected  = true;
         role         = selectedRole;
         reconnecting = false;
-        socket.emit("register", { role, username, roomCode });
+        const regPayload = { role, username, roomCode };
+        if (role === "host" && roomCode) regPayload.requestedCode = roomCode;
+        socket.emit("register", regPayload);
         updateButtonState();
         const disc = document.querySelector("#sync-panel #sync-disconnect-btn");
         if (disc && disc.textContent === t("cancel")) disc.textContent = t("disconnect");
       });
 
       socket.on("registered", ({ role: r }) => {
-        showNotification(`Connected as ${r} (${username})`);
+        showNotification(t("connectedAs", r, username));
         setConnectedPanelUI(r);
         if (r === "guest") socket.emit("request_sync");
         startSeekPoll();
@@ -188,6 +242,8 @@
         isConnected = false;
         role        = null;
         updateButtonState();
+        updateToolbarCode();
+        updateToolbarGuestCount(0);
         if (reason === "io client disconnect") {
           reconnecting = false;
           resetPanelUI();
@@ -199,7 +255,14 @@
       });
 
       socket.on("room_update", ({ connected, hosts, guests }) => {
+        if (lastGuestCount !== null && guests !== lastGuestCount) {
+          playBeep(guests > lastGuestCount);
+        }
+        lastGuestCount = guests;
+        guestCount     = guests;
+        lastRoomInfo   = { hosts, guests, connected };
         updateRoomInfo(hosts, guests, connected);
+        updateToolbarGuestCount(guests);
       });
 
       socket.on("cohost_mode_changed", ({ enabled }) => {
@@ -207,11 +270,7 @@
         updateCohostSection();
         updateButtonState();
         if (role === "guest") {
-          showNotification(
-            cohostMode
-              ? "Co-host mode ON — you can now control playback."
-              : "Co-host mode OFF."
-          );
+          showNotification(cohostMode ? t("cohostModeOn") : t("cohostModeOff"));
         }
       });
 
@@ -219,6 +278,7 @@
         if (!code) return;
         roomCode = code;
         localStorage.setItem("sync_roomCode", code);
+        updateToolbarCode();
         const p = getPanel();
         if (!p) return;
         const codeEl = qs(p, "#sync-host-room-code");
@@ -278,16 +338,16 @@
           const halfRtt = sentAt
             ? Math.min(Math.max(0, (Date.now() - sentAt) / 2), 1500)
             : 0;
-          const adjPos = position + halfRtt;
+          const adjPos = position + halfRtt + settings.syncDelay;
           await Player.seek(adjPos);
           resetSeekBaseline(adjPos);
         } catch (_) {}
       });
 
-      let trackSeq = 0;
+      let changeSeq = 0;
       socket.on("change_track", async ({ uri, position, contextUri } = {}) => {
         if (!isConnected || !uri) return;
-        ++trackSeq;
+        const seq = ++changeSeq;
         suppressFor(1200);
         try {
           if (contextUri && contextUri !== uri) {
@@ -295,11 +355,13 @@
           } else {
             await Player.playUri(uri, {}, { seekTo: position || 0 });
           }
+          if (seq !== changeSeq) return;
           resetSeekBaseline(position || 0);
         } catch (_) {
+          if (seq !== changeSeq) return;
           try {
             await Player.playUri(uri, {}, { seekTo: position || 0 });
-            resetSeekBaseline(position || 0);
+            if (seq === changeSeq) resetSeekBaseline(position || 0);
           } catch (_) {}
         }
       });
@@ -311,9 +373,9 @@
         suppressFor(1500);
         try {
           const latency = (sentAt && isPlaying)
-            ? Math.min(Math.max(0, Date.now() - sentAt), 2000)
+            ? Math.min(Math.max(0, (Date.now() - sentAt) / 2), 1500)
             : 0;
-          const adjPos = position + latency;
+          const adjPos = position + latency + settings.syncDelay;
           if (Player.data?.item?.uri !== uri) {
             try {
               if (contextUri && contextUri !== uri) {
@@ -354,29 +416,37 @@
           sentAt:     Date.now(),
         });
       });
+
+      socket.on("volume_change", async ({ volume } = {}) => {
+        if (!isConnected || role !== "guest" || !settings.volumeSync) return;
+        if (typeof volume !== "number") return;
+        try {
+          await Spicetify.Platform.PlaybackAPI.setVolume(volume);
+        } catch (_) {
+          try { Spicetify.Player.setVolume?.(volume); } catch (_) {}
+        }
+      });
     });
   }
 
   function disconnect() {
-    reconnecting = false;
-    cohostMode   = false;
+    reconnecting   = false;
+    cohostMode     = false;
+    lastGuestCount = null;
+    guestCount     = 0;
     stopSeekPoll();
     if (socket) { socket.disconnect(); socket = null; }
     isConnected = false;
     role        = null;
     updateButtonState();
+    updateToolbarCode();
+    updateToolbarGuestCount(0);
   }
 
   // --------------------------------------------------------------------------
   // Player event listeners (host + co-host guests)
   // --------------------------------------------------------------------------
 
-  // Unified seek detector: polls positionAsOfTimestamp every 50 ms in both
-  // play and pause states. The baseline (seekPollPos) is intentionally NOT
-  // reset during suppressCount > 0 windows -- Spotify fires onplaypause during
-  // seek buffering, and resetting there would mask the concurrent seek.
-  // Instead only seekPollTime advances during suppression (keeps elapsed small);
-  // seekPollPos stays frozen at the pre-seek reference.
   let seekPollTimer    = null;
   let seekPollPos      = null;
   let seekPollTime     = null;
@@ -410,16 +480,18 @@
         const expected  = seekPollPos + elapsed;
         const deviation = Math.abs(pos - expected);
         if (deviation > 500) {
-          seekPollPending = true;
-          clearTimeout(seekPollDebounce);
-          seekPollDebounce = setTimeout(() => {
-            seekPollPending = false;
-            const emitPos  = Player.data?.positionAsOfTimestamp || pos;
-            seekPollPos  = emitPos;
-            seekPollTime = Date.now();
-            socket.emit("seek", { position: emitPos, sentAt: Date.now() });
-            suppressFor(500);
-          }, 150);
+          if (!seekPollPending) {
+            seekPollPending = true;
+            seekPollDebounce = setTimeout(() => {
+              seekPollPending = false;
+              const emitPos  = Player.data?.positionAsOfTimestamp || pos;
+              const emitNow  = Date.now();
+              seekPollPos  = emitPos;
+              seekPollTime = emitNow;
+              socket.emit("seek", { position: emitPos, sentAt: emitNow });
+              suppressFor(500);
+            }, 150);
+          }
           seekPollTime = now;
           return;
         }
@@ -470,6 +542,14 @@
     suppressFor(800);
   });
 
+  Player.addEventListener("onvolumechange", () => {
+    if (!isController() || !socket?.connected || !settings.volumeSync) return;
+    const vol = Player.data?.volume ?? null;
+    if (vol === null || vol === lastVolume) return;
+    lastVolume = vol;
+    socket.emit("volume_change", { volume: vol });
+  });
+
   // --------------------------------------------------------------------------
   // Panel UI helpers
   // --------------------------------------------------------------------------
@@ -478,11 +558,12 @@
 
   function resetPanelUI() {
     const p = getPanel(); if (!p) return;
-    qs(p, "#sync-inputs-section").style.display  = "flex";
-    qs(p, "#sync-connect-btns").style.display    = "flex";
-    qs(p, "#sync-status-section").style.display  = "none";
-    qs(p, "#sync-room-info").style.display       = "none";
+    qs(p, "#sync-inputs-section").style.display    = "flex";
+    qs(p, "#sync-connect-btns").style.display      = "flex";
+    qs(p, "#sync-status-section").style.display    = "none";
+    qs(p, "#sync-room-info").style.display         = "none";
     qs(p, "#sync-host-code-section").style.display = "none";
+    qs(p, "#sync-cohost-row").style.display        = "none";
     const disc = qs(p, "#sync-disconnect-btn");
     disc.style.display = "none";
     disc.textContent   = t("disconnect");
@@ -513,12 +594,12 @@
 
   function setReconnectingPanelUI(attempt) {
     const p = getPanel(); if (!p) return;
-    qs(p, "#sync-inputs-section").style.display  = "none";
-    qs(p, "#sync-connect-btns").style.display    = "none";
+    qs(p, "#sync-inputs-section").style.display    = "none";
+    qs(p, "#sync-connect-btns").style.display      = "none";
     const disc = qs(p, "#sync-disconnect-btn");
     disc.style.display = "block";
     disc.textContent   = t("cancel");
-    qs(p, "#sync-status-section").style.display  = "flex";
+    qs(p, "#sync-status-section").style.display    = "flex";
     const st = qs(p, "#sync-status-text");
     st.textContent = attempt > 1 ? t("statusReconN", attempt) : t("statusRecon");
     st.style.color = "#f59b00";
@@ -530,17 +611,18 @@
 
   function setWaitingPanelUI() {
     const p = getPanel(); if (!p) return;
-    qs(p, "#sync-inputs-section").style.display  = "none";
-    qs(p, "#sync-connect-btns").style.display    = "none";
+    qs(p, "#sync-inputs-section").style.display    = "none";
+    qs(p, "#sync-connect-btns").style.display      = "none";
     const disc = qs(p, "#sync-disconnect-btn");
     disc.style.display = "block";
     disc.textContent   = t("disconnect");
-    qs(p, "#sync-status-section").style.display  = "flex";
+    qs(p, "#sync-status-section").style.display    = "flex";
     const st = qs(p, "#sync-status-text");
     st.textContent = t("statusWaiting");
     st.style.color = "#f59b00";
     qs(p, "#sync-cohost-row").style.display        = "none";
     qs(p, "#sync-guest-cohost-note").style.display = "none";
+    qs(p, "#sync-room-info").style.display         = "none";
   }
 
   function updateRoomInfo(hosts, guests, connected) {
@@ -574,26 +656,37 @@
     }
     const ri = qs(p, "#sync-room-info");
     if (ri && ri.style.display !== "none") {
-      const badge = ri.querySelector(".cohost-badge");
-      if (cohostMode && !badge) {
-        const b = document.createElement("span");
-        b.className = "cohost-badge";
-        b.innerHTML =
-          `<span style="color:rgba(255,255,255,0.2);margin:0 6px">·</span>` +
-          `<span style="color:var(--spice-button,#1db954);font-weight:700">co-host on</span>`;
-        ri.appendChild(b);
-      } else if (!cohostMode && badge) {
-        badge.remove();
-      }
+      updateRoomInfo(lastRoomInfo.hosts, lastRoomInfo.guests, lastRoomInfo.connected);
     }
   }
 
   // --------------------------------------------------------------------------
-  // Notifications and toolbar button state
+  // Notifications, toolbar elements, button state
   // --------------------------------------------------------------------------
   function showNotification(message, isError = false) {
-    if (!settings.notifications) return;
     Spicetify.showNotification(message, isError);
+  }
+
+  function updateToolbarCode() {
+    const el = document.getElementById("sync-toolbar-code");
+    if (!el) return;
+    if (settings.showCode && isConnected && roomCode) {
+      el.textContent = roomCode;
+      el.style.display = "block";
+    } else {
+      el.style.display = "none";
+    }
+  }
+
+  function updateToolbarGuestCount(n) {
+    const el = document.getElementById("sync-toolbar-guests");
+    if (!el) return;
+    if (isConnected && n > 0) {
+      el.textContent = String(n);
+      el.style.display = "block";
+    } else {
+      el.style.display = "none";
+    }
   }
 
   function updateButtonState() {
@@ -605,13 +698,13 @@
       color = "var(--spice-button, #1db954)";
       label = cohostMode ? "Sync: hosting (co-host on)" : "Sync: hosting";
     } else if (isConnected && role === "guest") {
-      color = cohostMode ? "var(--spice-button, #1db954)" : "#1e90ff";
+      color = "var(--spice-button, #1db954)";
       label = cohostMode ? "Sync: co-host mode" : "Sync: listening";
     } else if (reconnecting) {
-      color = "#f59b00";
+      color = "var(--spice-button, #1db954)";
       label = "Sync: reconnecting";
     } else {
-      color = "var(--spice-subtext, #b3b3b3)";
+      color = "var(--spice-button, #1db954)";
       label = t("appName");
     }
     btn.style.color = color;
@@ -622,6 +715,8 @@
     }
     btn.setAttribute("aria-label", label);
     btn.setAttribute("data-tooltip", label);
+    updateToolbarCode();
+    updateToolbarGuestCount(guestCount);
   }
 
   // --------------------------------------------------------------------------
@@ -642,18 +737,47 @@
       }
       #sync-panel { animation: syncPopIn 0.18s cubic-bezier(0.4,0,0.2,1) forwards; }
 
-      /* Toolbar button: always default cursor */
       #sync-toggle-btn { cursor: default !important; }
       #sync-toggle-btn:hover { cursor: default !important; }
+      #sync-toggle-btn::before, #sync-toggle-btn::after { content: none !important; display: none !important; }
 
-      /* Custom tooltip */
+      #sync-toolbar-code {
+        display: none;
+        position: absolute;
+        bottom: -6px;
+        left: 50%;
+        transform: translateX(-50%);
+        font-size: 11px;
+        font-weight: 800;
+        font-family: monospace;
+        letter-spacing: 0.08em;
+        color: inherit;
+        white-space: nowrap;
+        line-height: 1;
+        pointer-events: none;
+        margin-top: 5px;
+      }
+
+      #sync-toolbar-guests {
+        display: none;
+        position: absolute;
+        bottom: 1px;
+        right: 2px;
+        font-size: 8px;
+        font-weight: 800;
+        font-family: monospace;
+        color: inherit;
+        line-height: 1;
+        pointer-events: none;
+      }
+
       .sync-btn-tooltip {
         position: absolute;
         bottom: calc(100% + 6px);
         left: 50%;
         transform: translateX(-50%);
         background: #000;
-        color: #fff;
+        color: inherit;
         font-size: 13px;
         font-weight: 400;
         font-family: inherit;
@@ -706,12 +830,38 @@
         appearance: none;
       }
       .sync-select:focus { border-color: rgba(255,255,255,0.25); }
+
+      .sync-slider {
+        width: 100%;
+        -webkit-appearance: none;
+        appearance: none;
+        height: 4px;
+        border-radius: 2px;
+        background: rgba(255,255,255,0.18);
+        outline: none;
+        cursor: pointer;
+      }
+      .sync-slider::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 14px; height: 14px;
+        border-radius: 50%;
+        background: var(--spice-button, #1db954);
+        cursor: pointer;
+      }
+      .sync-slider::-moz-range-thumb {
+        width: 14px; height: 14px;
+        border-radius: 50%;
+        background: var(--spice-button, #1db954);
+        cursor: pointer;
+        border: none;
+      }
     `;
     document.head.appendChild(s);
   }
 
   // --------------------------------------------------------------------------
-  // Panel (floating, bottom-right, above player bar)
+  // Panel
   // --------------------------------------------------------------------------
   function closePanel() {
     const p = getPanel(); if (!p) return;
@@ -788,8 +938,13 @@
     <span style="font-size:13px;font-weight:700;letter-spacing:-0.01em">${t("appName")}</span>
   </div>
   <div style="display:flex;gap:2px;align-items:center">
-    <button id="sync-settings-btn" style="${ICON_BTN};font-size:14px;line-height:1" title="${t("settingsTitle")}"
-      onmouseover="this.style.background='rgba(255,255,255,0.1)'" onmouseout="this.style.background='none'">⚙</button>
+    <button id="sync-settings-btn" style="${ICON_BTN}" title="${t("settingsTitle")}"
+      onmouseover="this.style.background='rgba(255,255,255,0.1)'" onmouseout="this.style.background='none'">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+      </svg>
+    </button>
     <button id="sync-panel-close" style="${ICON_BTN}"
       onmouseover="this.style.background='rgba(255,255,255,0.1)'" onmouseout="this.style.background='none'">
       <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
@@ -837,21 +992,21 @@
       <button id="sync-copy-code-btn" style="margin-top:8px;padding:4px 14px;background:transparent;border:1px solid rgba(29,185,84,0.4);border-radius:50px;color:var(--spice-button,#1db954);font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;transition:background 0.15s"
         onmouseover="this.style.background='rgba(29,185,84,0.12)'" onmouseout="this.style.background='transparent'">${t("copyCode")}</button>
     </div>
-    <div id="sync-cohost-row" style="display:none;${SROW}">
-      <div style="flex:1;min-width:0;margin-right:10px">
-        <div style="font-size:12px;font-weight:600;margin-bottom:2px">${t("cohostLabel")}</div>
-        <div style="${SDESC}">${t("cohostDesc")}</div>
-      </div>
-      <label class="sync-toggle">
-        <input type="checkbox" id="sync-cohost-toggle">
-        <span class="sync-toggle-track"></span>
-      </label>
-    </div>
     <div id="sync-guest-cohost-note" style="display:none;padding:8px 10px;background:rgba(29,185,84,0.09);border:1px solid rgba(29,185,84,0.18);border-radius:7px;font-size:11px;color:var(--spice-button,#1db954);line-height:1.4">
       ${t("cohostNote")}
     </div>
   </div>
   <div id="sync-room-info" style="display:none;align-items:center;justify-content:center;flex-wrap:wrap;gap:4px;font-size:11px;color:var(--spice-subtext,#a7a7a7)"></div>
+  <div id="sync-cohost-row" style="display:none;${SROW}">
+    <div style="flex:1;min-width:0;margin-right:10px">
+      <div style="font-size:12px;font-weight:600;margin-bottom:2px">${t("cohostLabel")}</div>
+      <div style="${SDESC}">${t("cohostDesc")}</div>
+    </div>
+    <label class="sync-toggle">
+      <input type="checkbox" id="sync-cohost-toggle">
+      <span class="sync-toggle-track"></span>
+    </label>
+  </div>
   <button id="sync-disconnect-btn" style="display:none;width:100%;padding:9px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:50px;color:var(--spice-text,#fff);font-weight:700;cursor:pointer;font-size:12px;letter-spacing:0.02em;font-family:inherit;transition:opacity 0.15s"
     onmouseover="this.style.opacity='.7'" onmouseout="this.style.opacity='1'">${t("disconnect")}</button>
 </div>
@@ -860,13 +1015,7 @@
   <button id="sync-settings-back" style="width:100%;padding:9px 12px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:var(--spice-text,#fff);font-weight:600;cursor:pointer;font-size:12px;font-family:inherit;text-align:left;transition:opacity 0.15s"
     onmouseover="this.style.opacity='.75'" onmouseout="this.style.opacity='1'">${t("back")}</button>
 
-  <div style="${SROW}">
-    <div style="flex:1;min-width:0;margin-right:10px">
-      <div style="font-size:12px;font-weight:600;margin-bottom:2px">${t("autoConnect")}</div>
-      <div style="${SDESC}">${t("autoConnectDesc")}</div>
-    </div>
-    <label class="sync-toggle"><input type="checkbox" id="sync-s-autoconnect"><span class="sync-toggle-track"></span></label>
-  </div>
+  <div style="font-size:9px;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:var(--spice-subtext,#a7a7a7)">${t("sectionGeneral")}</div>
 
   <div>
     <span style="${LBL}">${t("language")}</span>
@@ -879,23 +1028,60 @@
 
   <div style="${SROW}">
     <div style="flex:1;min-width:0;margin-right:10px">
-      <div style="font-size:12px;font-weight:600;margin-bottom:2px">${t("notifs")}</div>
-      <div style="${SDESC}">${t("notifsDesc")}</div>
+      <div style="font-size:12px;font-weight:600;margin-bottom:2px">${t("autoConnect")}</div>
+      <div style="${SDESC}">${t("autoConnectDesc")}</div>
     </div>
-    <label class="sync-toggle"><input type="checkbox" id="sync-s-notifs"><span class="sync-toggle-track"></span></label>
+    <label class="sync-toggle"><input type="checkbox" id="sync-s-autoconnect"><span class="sync-toggle-track"></span></label>
+  </div>
+
+  <div style="${SROW}">
+    <div style="flex:1;min-width:0;margin-right:10px">
+      <div style="font-size:12px;font-weight:600;margin-bottom:2px">${t("soundNotif")}</div>
+      <div style="${SDESC}">${t("soundNotifDesc")}</div>
+    </div>
+    <label class="sync-toggle"><input type="checkbox" id="sync-s-soundnotif"><span class="sync-toggle-track"></span></label>
+  </div>
+
+  <div style="font-size:9px;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:var(--spice-subtext,#a7a7a7);margin-top:4px">${t("sectionSession")}</div>
+
+  <div style="${SROW}">
+    <div style="flex:1;min-width:0;margin-right:10px">
+      <div style="font-size:12px;font-weight:600;margin-bottom:2px">${t("showCode")}</div>
+      <div style="${SDESC}">${t("showCodeDesc")}</div>
+    </div>
+    <label class="sync-toggle"><input type="checkbox" id="sync-s-showcode"><span class="sync-toggle-track"></span></label>
+  </div>
+
+  <div style="${SROW}">
+    <div style="flex:1;min-width:0;margin-right:10px">
+      <div style="font-size:12px;font-weight:600;margin-bottom:2px">${t("volumeSync")}</div>
+      <div style="${SDESC}">${t("volumeSyncDesc")}</div>
+    </div>
+    <label class="sync-toggle"><input type="checkbox" id="sync-s-volumesync"><span class="sync-toggle-track"></span></label>
+  </div>
+
+  <div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px">
+      <span style="${LBL};margin-bottom:0">${t("syncDelay")}</span>
+      <span id="sync-s-delay-val" style="font-size:11px;font-weight:600;color:var(--spice-button,#1db954)">${settings.syncDelay} ms</span>
+    </div>
+    <div style="${SDESC};margin-bottom:6px">${t("syncDelayDesc")}</div>
+    <input type="range" id="sync-s-delay" class="sync-slider" min="0" max="500" step="10" value="${settings.syncDelay}"/>
   </div>
 </div>`;
 
     document.body.appendChild(panel);
+    qs(panel, "#sync-cohost-row").style.display = "none";
 
     qs(panel, "#sync-ip").value        = serverIP;
     qs(panel, "#sync-username").value  = username;
-    qs(panel, "#sync-room-code").value = roomCode;
+    qs(panel, "#sync-room-code").value = "";
 
     function saveInputs() {
-      serverIP = qs(panel, "#sync-ip").value.trim() || "localhost";
+      serverIP = qs(panel, "#sync-ip").value.trim() || "spicetify-sync-server.onrender.com";
       username = qs(panel, "#sync-username").value.trim() || "User";
-      roomCode = qs(panel, "#sync-room-code").value.trim().toUpperCase();
+      const inputCode = qs(panel, "#sync-room-code").value.trim().toUpperCase();
+      roomCode = inputCode || roomCode;
       localStorage.setItem("sync_serverIP", serverIP);
       localStorage.setItem("sync_username", username);
       localStorage.setItem("sync_roomCode", roomCode);
@@ -924,7 +1110,6 @@
       socket.emit("set_cohost_mode", { enabled: e.target.checked });
     });
 
-    // Settings controls
     const autoEl = qs(panel, "#sync-s-autoconnect");
     autoEl.checked = settings.autoConnect;
     autoEl.addEventListener("change", (e) => saveSetting("autoConnect", e.target.checked));
@@ -933,7 +1118,6 @@
     langEl.value = settings.lang;
     langEl.addEventListener("change", (e) => {
       saveSetting("lang", e.target.value);
-      // Rebuild panel in new language, return to settings view
       panel.remove();
       buildPanel();
       const np = getPanel();
@@ -943,11 +1127,29 @@
       }
     });
 
-    const notifsEl = qs(panel, "#sync-s-notifs");
-    notifsEl.checked = settings.notifications;
-    notifsEl.addEventListener("change", (e) => saveSetting("notifications", e.target.checked));
+    const showCodeEl = qs(panel, "#sync-s-showcode");
+    showCodeEl.checked = settings.showCode;
+    showCodeEl.addEventListener("change", (e) => {
+      saveSetting("showCode", e.target.checked);
+      updateToolbarCode();
+    });
 
-    // Restore session state
+    const volumeSyncEl = qs(panel, "#sync-s-volumesync");
+    volumeSyncEl.checked = settings.volumeSync;
+    volumeSyncEl.addEventListener("change", (e) => saveSetting("volumeSync", e.target.checked));
+
+    const soundNotifEl = qs(panel, "#sync-s-soundnotif");
+    soundNotifEl.checked = settings.soundNotif;
+    soundNotifEl.addEventListener("change", (e) => saveSetting("soundNotif", e.target.checked));
+
+    const delaySlider = qs(panel, "#sync-s-delay");
+    const delayVal    = qs(panel, "#sync-s-delay-val");
+    delaySlider.addEventListener("input", (e) => {
+      const v = parseInt(e.target.value, 10);
+      delayVal.textContent = `${v} ms`;
+      saveSetting("syncDelay", v);
+    });
+
     if (isConnected) {
       setConnectedPanelUI(role);
       qs(panel, "#sync-cohost-toggle").checked = cohostMode;
@@ -965,19 +1167,18 @@
     btn.id = "sync-toggle-btn";
     btn.setAttribute("aria-label", t("appName"));
     btn.setAttribute("data-tooltip", t("appName"));
-    // Copy classes from a native Spicetify toolbar button so theming applies identically
+    // IMPORTANT: copy classes from native button — do not change this mechanism
     const nativeBtn = document.querySelector(".main-nowPlayingBar-extraControls button");
     if (nativeBtn && nativeBtn.className) {
       btn.className = nativeBtn.className;
     } else {
-      btn.style.cssText =
-        "background:none;border:none;padding:4px 8px;border-radius:4px";
+      btn.style.cssText = "background:none;border:none;padding:4px 8px;border-radius:4px";
     }
-    btn.style.cursor = "default";
-    btn.style.display = "flex";
-    btn.style.alignItems = "center";
+    btn.style.cursor         = "default";
+    btn.style.display        = "flex";
+    btn.style.alignItems     = "center";
     btn.style.justifyContent = "center";
-    btn.style.position = "relative";
+    btn.style.position       = "relative";
 
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("width", "20");
@@ -992,7 +1193,14 @@
       '<line x1="8.83" y1="13.41" x2="15.17" y2="16.59" stroke="currentColor" stroke-width="1.5"/>';
     btn.appendChild(svg);
 
-    // Custom tooltip (absolute inside relative button)
+    const codeLabel = document.createElement("span");
+    codeLabel.id = "sync-toolbar-code";
+    btn.appendChild(codeLabel);
+
+    const guestBadge = document.createElement("span");
+    guestBadge.id = "sync-toolbar-guests";
+    btn.appendChild(guestBadge);
+
     const tooltip = document.createElement("div");
     tooltip.className = "sync-btn-tooltip";
     tooltip.textContent = "Spicetify Sync";
@@ -1000,7 +1208,6 @@
 
     btn.addEventListener("mouseenter", () => tooltip.classList.add("sync-btn-tooltip--visible"));
     btn.addEventListener("mouseleave", () => tooltip.classList.remove("sync-btn-tooltip--visible"));
-
     btn.addEventListener("click", () => {
       if (getPanel()) { closePanel(); return; }
       buildPanel();
@@ -1019,6 +1226,8 @@
         "background:var(--spice-sidebar,#1a1a1a);border-radius:50%;width:36px;height:36px";
       document.body.appendChild(btn);
     }
+
+    updateButtonState();
   }
 
   // --------------------------------------------------------------------------
@@ -1042,7 +1251,7 @@
       document.querySelector("[class*='extraControls']") ||
       document.querySelector(".player-controls__right");
     if (ready) {
-      injectStyles(); // inject early so CSS cursor rule is available
+      injectStyles();
       createToolbarButton();
       maybeAutoConnect();
     } else {
