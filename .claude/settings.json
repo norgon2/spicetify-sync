@@ -1,0 +1,44 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$raw = [Console]::In.ReadToEnd(); try { $j = $raw | ConvertFrom-Json; $cmd = $j.tool_input.command } catch { exit 0 }; if ($cmd -notmatch 'git\\s+commit') { exit 0 }; node --check 'C:\\spicetify-sync-extension\\sync.js'; if ($LASTEXITCODE -ne 0) { Write-Output 'Syntaxe JS invalide dans sync.js - commit bloque'; exit 2 }",
+            "shell": "powershell",
+            "statusMessage": "Verification syntaxe JS...",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$raw = [Console]::In.ReadToEnd(); $j = $raw | ConvertFrom-Json; $p = $j.tool_input.file_path; if ($p -like '*sync.js*') { Copy-Item -LiteralPath $p 'C:\\Users\\Admin\\AppData\\Roaming\\spicetify\\Extensions\\sync.js' -Force }",
+            "shell": "powershell",
+            "statusMessage": "Syncing sync.js to Spicetify...",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "Add-Type -AssemblyName System.Windows.Forms; $n = New-Object System.Windows.Forms.NotifyIcon; $n.Icon = [System.Drawing.SystemIcons]::Information; $n.Visible = $true; $n.ShowBalloonTip(5000, 'Claude Code', 'Tache terminee', [System.Windows.Forms.ToolTipIcon]::Info); Start-Sleep -Seconds 2; $n.Dispose()",
+            "shell": "powershell",
+            "timeout": 8
+          }
+        ]
+      }
+    ]
+  }
+}
