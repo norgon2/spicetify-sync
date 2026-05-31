@@ -308,11 +308,13 @@
           socket.emit("request_sync");
           showNotification(t("hostConnected"));
           setConnectedPanelUI(role);
+          updateRoomInfo(lastRoomInfo.hosts, lastRoomInfo.guests, lastRoomInfo.connected);
         }
       });
 
       socket.on("host_left", () => {
         waitingForHost = true;
+        cohostMode     = false;
         showNotification(t("hostLeft"), true);
         setWaitingPanelUI();
       });
@@ -341,7 +343,7 @@
         if (!isConnected) return;
         suppressFor(600);
         try {
-          if (position !== undefined) await Player.seek(position);
+          if (position != null) await Player.seek(position);
           await Player.pause();
           resetSeekBaseline(position ?? null);
         } catch (_) {}
@@ -667,9 +669,9 @@
     if (toggle) toggle.checked = cohostMode;
     if (role === "guest") {
       const note = qs(p, "#sync-guest-cohost-note");
-      if (note) note.style.display = cohostMode ? "block" : "none";
+      if (note) note.style.display = (cohostMode && !waitingForHost) ? "block" : "none";
       const st = qs(p, "#sync-status-text");
-      if (st && isConnected) {
+      if (st && isConnected && !waitingForHost) {
         st.textContent = cohostMode ? t("statusCohost") : t("statusGuest");
         st.style.color = cohostMode ? "var(--spice-button,#1db954)" : "#1e90ff";
       }
