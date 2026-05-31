@@ -300,7 +300,7 @@
         if (section) section.style.display = "block";
       });
 
-      socket.on("waiting_for_host", () => { waitingForHost = true; setWaitingPanelUI(); });
+      socket.on("waiting_for_host", () => { waitingForHost = true; setWaitingPanelUI(); updateButtonState(); });
 
       socket.on("host_connected", () => {
         waitingForHost = false;
@@ -310,6 +310,7 @@
           setConnectedPanelUI(role);
           updateRoomInfo(lastRoomInfo.hosts, lastRoomInfo.guests, lastRoomInfo.connected);
         }
+        updateButtonState();
       });
 
       socket.on("host_left", () => {
@@ -717,6 +718,9 @@
     if (isConnected && role === "host") {
       color = "var(--spice-button, #1db954)";
       label = cohostMode ? "Sync: hosting (co-host on)" : "Sync: hosting";
+    } else if (isConnected && role === "guest" && waitingForHost) {
+      color = "var(--spice-button, #1db954)";
+      label = "Sync: waiting for host";
     } else if (isConnected && role === "guest") {
       color = "var(--spice-button, #1db954)";
       label = cohostMode ? "Sync: co-host mode" : "Sync: listening";
