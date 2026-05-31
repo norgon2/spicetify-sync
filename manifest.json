@@ -1,0 +1,15 @@
+{
+  "name": "Spicetify Sync",
+  "description": "Synchronize Spotify playback in real-time across multiple devices using a Socket.IO server. Supports host/guest roles, co-host mode, automatic latency compensation and status notifications.",
+  "preview": "https://raw.githubusercontent.com/norgon2/spicetify-sync/main/preview.png",
+  "version": "1.0.0",
+  "authors": [
+    {
+      "name": "norgon2",
+      "url": "https://github.com/norgon2"
+    }
+  ],
+  "homepage": "https://github.com/norgon2/spicetify-sync",
+  "readme": "https://raw.githubusercontent.com/norgon2/spicetify-sync/main/README.md",
+  "changelog": "https://raw.githubusercontent.com/norgon2/spicetify-sync/main/CHANGELOG.md"
+}
