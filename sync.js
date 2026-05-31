@@ -78,6 +78,10 @@
       connectedAs: (r, name) => `Connected as ${r} (${name})`,
       cohostModeOn: "Co-host mode ON — you can now control playback.",
       cohostModeOff: "Co-host mode OFF.",
+      cannotReach: "Cannot reach server — retrying…",
+      connLost: "Connection lost — reconnecting…",
+      hostConnected: "Host connected — syncing…",
+      hostLeft: "Host disconnected.",
     },
     fr: {
       appName: "Spicetify Sync",
@@ -108,6 +112,10 @@
       connectedAs: (r, name) => `Connecté en tant que ${r} (${name})`,
       cohostModeOn: "Mode co-hôte activé — vous pouvez contrôler la lecture.",
       cohostModeOff: "Mode co-hôte désactivé.",
+      cannotReach: "Impossible de joindre le serveur — reconnexion…",
+      connLost: "Connexion perdue — reconnexion…",
+      hostConnected: "Hôte connecté — synchronisation…",
+      hostLeft: "Hôte déconnecté.",
     },
   };
   function getLang() {
@@ -182,6 +190,7 @@
     lastVolume      = null;
     lastGuestCount  = null;
     guestCount      = 0;
+    lastRoomInfo    = { hosts: 0, guests: 0, connected: 0 };
 
     loadSocketIO(() => {
       const isLocal = serverIP === "localhost" || serverIP === "127.0.0.1";
@@ -219,7 +228,7 @@
       });
 
       socket.on("connect_error", () => {
-        if (!reconnecting) showNotification("Cannot reach server — retrying…", true);
+        if (!reconnecting) showNotification(t("cannotReach"), true);
         reconnecting = true;
         updateButtonState();
         setReconnectingPanelUI();
@@ -249,7 +258,7 @@
           resetPanelUI();
         } else {
           reconnecting = true;
-          showNotification("Connection lost — reconnecting…");
+          showNotification(t("connLost"));
           setReconnectingPanelUI();
         }
       });
@@ -292,12 +301,12 @@
       socket.on("host_connected", () => {
         if (role === "guest" && isConnected) {
           socket.emit("request_sync");
-          showNotification("Host connected — syncing…");
+          showNotification(t("hostConnected"));
         }
       });
 
       socket.on("host_left", () => {
-        showNotification("Host disconnected.", true);
+        showNotification(t("hostLeft"), true);
         setWaitingPanelUI();
       });
 
@@ -332,7 +341,7 @@
       });
 
       socket.on("seek", async ({ position, sentAt } = {}) => {
-        if (!isConnected) return;
+        if (!isConnected || position == null) return;
         suppressFor(800);
         try {
           const halfRtt = sentAt
@@ -394,6 +403,7 @@
           } else {
             await Player.seek(adjPos);
             resetSeekBaseline(adjPos);
+            if (seq !== syncSeq) return;
             if (isPlaying) {
               await Player.play();
             } else {
@@ -434,6 +444,7 @@
     cohostMode     = false;
     lastGuestCount = null;
     guestCount     = 0;
+    lastRoomInfo   = { hosts: 0, guests: 0, connected: 0 };
     stopSeekPoll();
     if (socket) { socket.disconnect(); socket = null; }
     isConnected = false;
@@ -466,14 +477,14 @@
     seekPollTimer = setInterval(() => {
       const state = Player.data;
       if (!state?.item?.uri) return;
-      const now    = Date.now();
-      const pos    = state.positionAsOfTimestamp || 0;
-      const paused = state.isPaused;
+      const now = Date.now();
+      const pos = state.positionAsOfTimestamp || 0;
       if (!isController() || !socket?.connected) {
         seekPollPos  = pos; seekPollTime = now;
         clearTimeout(seekPollDebounce); seekPollPending = false;
         return;
       }
+      const paused = state.isPaused;
       if (suppressCount > 0) { seekPollTime = now; return; }
       if (seekPollPos !== null) {
         const elapsed   = paused ? 0 : now - seekPollTime;
@@ -654,10 +665,7 @@
         st.style.color = cohostMode ? "var(--spice-button,#1db954)" : "#1e90ff";
       }
     }
-    const ri = qs(p, "#sync-room-info");
-    if (ri && ri.style.display !== "none") {
-      updateRoomInfo(lastRoomInfo.hosts, lastRoomInfo.guests, lastRoomInfo.connected);
-    }
+    updateRoomInfo(lastRoomInfo.hosts, lastRoomInfo.guests, lastRoomInfo.connected);
   }
 
   // --------------------------------------------------------------------------
