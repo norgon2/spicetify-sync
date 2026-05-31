@@ -251,8 +251,9 @@
       });
 
       socket.on("disconnect", (reason) => {
-        isConnected = false;
-        role        = null;
+        isConnected    = false;
+        role           = null;
+        waitingForHost = false;
         updateButtonState();
         updateToolbarCode();
         updateToolbarGuestCount(0);
@@ -306,10 +307,12 @@
         if (role === "guest" && isConnected) {
           socket.emit("request_sync");
           showNotification(t("hostConnected"));
+          setConnectedPanelUI(role);
         }
       });
 
       socket.on("host_left", () => {
+        waitingForHost = true;
         showNotification(t("hostLeft"), true);
         setWaitingPanelUI();
       });
@@ -327,7 +330,7 @@
             resetSeekBaseline(position || 0);
           } else {
             suppressFor(500);
-            if (position !== undefined) await Player.seek(position);
+            if (position != null) await Player.seek(position);
             await Player.play();
             resetSeekBaseline(position ?? null);
           }
@@ -491,7 +494,7 @@
         return;
       }
       const paused = state.isPaused;
-      if (suppressCount > 0) { seekPollPos = pos; seekPollTime = now; return; }
+      if (suppressCount > 0) { clearTimeout(seekPollDebounce); seekPollPending = false; seekPollPos = pos; seekPollTime = now; return; }
       if (seekPollPos !== null) {
         const elapsed   = paused ? 0 : now - seekPollTime;
         const expected  = seekPollPos + elapsed;
@@ -1165,10 +1168,14 @@
     });
 
     if (isConnected) {
-      setConnectedPanelUI(role);
-      updateRoomInfo(lastRoomInfo.hosts, lastRoomInfo.guests, lastRoomInfo.connected);
-      qs(panel, "#sync-cohost-toggle").checked = cohostMode;
-      if (role === "guest" && cohostMode) qs(panel, "#sync-guest-cohost-note").style.display = "block";
+      if (waitingForHost) {
+        setWaitingPanelUI();
+      } else {
+        setConnectedPanelUI(role);
+        updateRoomInfo(lastRoomInfo.hosts, lastRoomInfo.guests, lastRoomInfo.connected);
+        qs(panel, "#sync-cohost-toggle").checked = cohostMode;
+        if (role === "guest" && cohostMode) qs(panel, "#sync-guest-cohost-note").style.display = "block";
+      }
     } else if (reconnecting) {
       setReconnectingPanelUI();
     }
