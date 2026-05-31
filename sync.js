@@ -317,6 +317,7 @@
         cohostMode     = false;
         showNotification(t("hostLeft"), true);
         setWaitingPanelUI();
+        updateButtonState();
       });
 
       socket.on("play", async ({ uri, position, contextUri } = {}) => {
