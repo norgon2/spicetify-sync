@@ -314,6 +314,7 @@
       });
 
       socket.on("host_left", () => {
+        if (waitingForHost) return;
         waitingForHost = true;
         cohostMode     = false;
         showNotification(t("hostLeft"), true);
@@ -442,6 +443,7 @@
       socket.on("volume_change", async ({ volume } = {}) => {
         if (!isConnected || role !== "guest" || !settings.volumeSync) return;
         if (typeof volume !== "number") return;
+        lastVolume = volume;
         try {
           await Spicetify.Platform.PlaybackAPI.setVolume(volume);
         } catch (_) {
@@ -1101,18 +1103,18 @@
     qs(panel, "#sync-username").value  = username;
     qs(panel, "#sync-room-code").value = "";
 
-    function saveInputs() {
+    function saveInputs(selectedRole) {
       serverIP = qs(panel, "#sync-ip").value.trim() || "spicetify-sync-server.onrender.com";
       username = qs(panel, "#sync-username").value.trim() || "User";
       const inputCode = qs(panel, "#sync-room-code").value.trim().toUpperCase();
-      roomCode = inputCode || roomCode;
+      roomCode = selectedRole === "guest" ? inputCode : (inputCode || roomCode);
       localStorage.setItem("sync_serverIP", serverIP);
       localStorage.setItem("sync_username", username);
       localStorage.setItem("sync_roomCode", roomCode);
     }
 
-    qs(panel, "#sync-host-btn").addEventListener("click", () => { saveInputs(); connect("host"); });
-    qs(panel, "#sync-guest-btn").addEventListener("click", () => { saveInputs(); connect("guest"); });
+    qs(panel, "#sync-host-btn").addEventListener("click", () => { saveInputs("host"); connect("host"); });
+    qs(panel, "#sync-guest-btn").addEventListener("click", () => { saveInputs("guest"); connect("guest"); });
     qs(panel, "#sync-disconnect-btn").addEventListener("click", () => { disconnect(); resetPanelUI(); });
     qs(panel, "#sync-copy-code-btn").addEventListener("click", () => {
       if (!roomCode) return;
