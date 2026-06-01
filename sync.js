@@ -20,9 +20,12 @@
   let lastVolume     = null;
   let lastGuestCount = null;
   let guestCount     = 0;
-  let lastRoomInfo   = { hosts: 0, guests: 0, connected: 0 };
+  let lastRoomInfo   = { hosts: 0, guests: 0 };
   let waitingForHost = false;
 
+  // Prevents event echo: applying a remote command triggers local Player events
+  // (onplaypause, songchange) that would re-broadcast it. suppressFor() increments
+  // the counter; listeners return early while it's > 0.
   let suppressCount = 0;
   function suppressFor(ms) {
     suppressCount++;
@@ -182,6 +185,9 @@
   // --------------------------------------------------------------------------
   // Connection
   // --------------------------------------------------------------------------
+  // Host creates the room; server assigns a code via room_created.
+  // Guest joins with the 6-char code. Both roles re-register using the
+  // closure-captured selectedRole on every Socket.io auto-reconnect.
   function connect(selectedRole) {
     localStorage.setItem("sync_lastRole", selectedRole);
     stopSeekPoll();
@@ -191,7 +197,7 @@
     lastVolume      = null;
     lastGuestCount  = null;
     guestCount      = 0;
-    lastRoomInfo    = { hosts: 0, guests: 0, connected: 0 };
+    lastRoomInfo    = { hosts: 0, guests: 0 };
     waitingForHost  = false;
 
     loadSocketIO(() => {
@@ -214,6 +220,7 @@
         isConnected  = true;
         role         = selectedRole;
         reconnecting = false;
+        lastVolume   = null;
         const regPayload = { role, username, roomCode };
         if (role === "host" && roomCode) regPayload.requestedCode = roomCode;
         socket.emit("register", regPayload);
@@ -267,14 +274,14 @@
         }
       });
 
-      socket.on("room_update", ({ connected, hosts, guests }) => {
+      socket.on("room_update", ({ hosts, guests }) => {
         if (lastGuestCount !== null && guests !== lastGuestCount) {
           playBeep(guests > lastGuestCount);
         }
         lastGuestCount = guests;
         guestCount     = guests;
-        lastRoomInfo   = { hosts, guests, connected };
-        updateRoomInfo(hosts, guests, connected);
+        lastRoomInfo   = { hosts, guests };
+        updateRoomInfo(hosts, guests);
         updateToolbarGuestCount(guests);
       });
 
@@ -308,7 +315,7 @@
           socket.emit("request_sync");
           showNotification(t("hostConnected"));
           setConnectedPanelUI(role);
-          updateRoomInfo(lastRoomInfo.hosts, lastRoomInfo.guests, lastRoomInfo.connected);
+          updateRoomInfo(lastRoomInfo.hosts, lastRoomInfo.guests);
         }
         updateButtonState();
       });
@@ -458,7 +465,7 @@
     cohostMode     = false;
     lastGuestCount = null;
     guestCount     = 0;
-    lastRoomInfo   = { hosts: 0, guests: 0, connected: 0 };
+    lastRoomInfo   = { hosts: 0, guests: 0 };
     waitingForHost = false;
     stopSeekPoll();
     if (socket) { socket.disconnect(); socket = null; }
@@ -486,6 +493,9 @@
     clearTimeout(seekPollDebounce);
   }
 
+  // Detects manual seeks by comparing the actual playhead against expected
+  // position (baseline + elapsed). Deviation > 500ms triggers a 150ms-debounced
+  // broadcast, absorbing rapid scrubbing into a single seek event.
   function startSeekPoll() {
     if (seekPollTimer) return;
     resetSeekBaseline();
@@ -651,7 +661,7 @@
     qs(p, "#sync-room-info").style.display         = "none";
   }
 
-  function updateRoomInfo(hosts, guests, connected) {
+  function updateRoomInfo(hosts, guests) {
     const p = getPanel(); if (!p) return;
     const ri = qs(p, "#sync-room-info");
     if (!isConnected || waitingForHost) { ri.style.display = "none"; return; }
@@ -664,7 +674,6 @@
         ? `<span style="color:rgba(255,255,255,0.2);margin:0 6px">·</span>` +
           `<span style="color:var(--spice-button,#1db954);font-weight:700">co-host on</span>`
         : "");
-    void connected;
   }
 
   function updateCohostSection() {
@@ -680,7 +689,7 @@
         st.style.color = cohostMode ? "var(--spice-button,#1db954)" : "#1e90ff";
       }
     }
-    updateRoomInfo(lastRoomInfo.hosts, lastRoomInfo.guests, lastRoomInfo.connected);
+    updateRoomInfo(lastRoomInfo.hosts, lastRoomInfo.guests);
   }
 
   // --------------------------------------------------------------------------
@@ -716,21 +725,17 @@
     const btn = document.getElementById("sync-toggle-btn");
     if (!btn) return;
     const svgEl = btn.querySelector("svg");
-    let color, label;
+    const color = "var(--spice-button, #1db954)";
+    let label;
     if (isConnected && role === "host") {
-      color = "var(--spice-button, #1db954)";
       label = cohostMode ? "Sync: hosting (co-host on)" : "Sync: hosting";
     } else if (isConnected && role === "guest" && waitingForHost) {
-      color = "var(--spice-button, #1db954)";
       label = "Sync: waiting for host";
     } else if (isConnected && role === "guest") {
-      color = "var(--spice-button, #1db954)";
       label = cohostMode ? "Sync: co-host mode" : "Sync: listening";
     } else if (reconnecting) {
-      color = "var(--spice-button, #1db954)";
       label = "Sync: reconnecting";
     } else {
-      color = "var(--spice-button, #1db954)";
       label = t("appName");
     }
     btn.style.color = color;
@@ -1181,7 +1186,7 @@
         setWaitingPanelUI();
       } else {
         setConnectedPanelUI(role);
-        updateRoomInfo(lastRoomInfo.hosts, lastRoomInfo.guests, lastRoomInfo.connected);
+        updateRoomInfo(lastRoomInfo.hosts, lastRoomInfo.guests);
         qs(panel, "#sync-cohost-toggle").checked = cohostMode;
         if (role === "guest" && cohostMode) qs(panel, "#sync-guest-cohost-note").style.display = "block";
       }
