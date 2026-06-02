@@ -304,7 +304,7 @@
         cohostMode = Boolean(enabled);
         updateCohostSection();
         updateButtonState();
-        if (role === "guest") {
+        if (role === "guest" && !waitingForHost) {
           showNotification(cohostMode ? t("cohostModeOn") : t("cohostModeOff"));
         }
       });
@@ -1202,11 +1202,9 @@
     }
 
     qs(panel, "#sync-host-btn").addEventListener("click", () => {
-      if (socketIOCallbacks !== null) return;
       saveInputs("host"); connect("host");
     });
     qs(panel, "#sync-guest-btn").addEventListener("click", () => {
-      if (socketIOCallbacks !== null) return;
       saveInputs("guest"); connect("guest");
     });
     qs(panel, "#sync-disconnect-btn").addEventListener("click", () => { disconnect(); resetPanelUI(); });
