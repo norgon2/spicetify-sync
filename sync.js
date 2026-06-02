@@ -1759,6 +1759,35 @@
   }
 
   // --------------------------------------------------------------------------
+  // Auto-detect Spotify display name as default username
+  // --------------------------------------------------------------------------
+  async function tryGetSpotifyUsername() {
+    // Only fill if the user has never saved a custom name
+    if (localStorage.getItem("sync_username")) return;
+    try {
+      let name = null;
+      // Primary: async UserAPI.getUser()
+      if (typeof Platform?.UserAPI?.getUser === "function") {
+        const user = await Platform.UserAPI.getUser();
+        name = user?.displayName || user?.display_name || user?.username;
+      }
+      // Fallback: synchronous cached properties
+      if (!name) {
+        const api = Platform?.UserAPI;
+        name = api?._product_state?.displayName
+            || api?._user_details_cache?.displayName
+            || api?._user_details_cache?.display_name
+            || Spicetify.LocalStorage?.get?.("UserInfo.displayName")
+            || Spicetify.LocalStorage?.get?.("displayName");
+      }
+      if (name && typeof name === "string" && name.trim()) {
+        username = name.trim().slice(0, 32);
+        localStorage.setItem("sync_username", username);
+      }
+    } catch (_) {}
+  }
+
+  // --------------------------------------------------------------------------
   // Auto-connect
   // --------------------------------------------------------------------------
   function maybeAutoConnect() {
@@ -1782,6 +1811,7 @@
         document.querySelector("[class*='extraControls']") ||
         document.querySelector(".player-controls__right");
       if (ready) {
+        tryGetSpotifyUsername();
         injectStyles();
         createToolbarButton();
         registerPlayerListeners();
