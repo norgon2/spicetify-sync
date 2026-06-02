@@ -1760,26 +1760,24 @@
 
   // --------------------------------------------------------------------------
   // Auto-detect Spotify display name as default username
+  // Source: https://spicetify.app/docs — Platform.UserAPI.getUser() and CosmosAsync
   // --------------------------------------------------------------------------
   async function tryGetSpotifyUsername() {
-    // Only fill if the user has never saved a custom name
     if (localStorage.getItem("sync_username")) return;
     try {
-      let name = null;
-      // Primary: async UserAPI.getUser()
-      if (typeof Platform?.UserAPI?.getUser === "function") {
-        const user = await Platform.UserAPI.getUser();
-        name = user?.displayName || user?.display_name || user?.username;
+      // Method 1 (official): Platform.UserAPI.getUser() -> displayName
+      const user = await Spicetify.Platform.UserAPI.getUser();
+      const name = user?.displayName;
+      if (name && typeof name === "string" && name.trim()) {
+        username = name.trim().slice(0, 32);
+        localStorage.setItem("sync_username", username);
+        return;
       }
-      // Fallback: synchronous cached properties
-      if (!name) {
-        const api = Platform?.UserAPI;
-        name = api?._product_state?.displayName
-            || api?._user_details_cache?.displayName
-            || api?._user_details_cache?.display_name
-            || Spicetify.LocalStorage?.get?.("UserInfo.displayName")
-            || Spicetify.LocalStorage?.get?.("displayName");
-      }
+    } catch (_) {}
+    try {
+      // Method 2 (fallback): Spotify Web API via CosmosAsync (auth injected automatically)
+      const me = await Spicetify.CosmosAsync.get("https://api.spotify.com/v1/me");
+      const name = me?.display_name;
       if (name && typeof name === "string" && name.trim()) {
         username = name.trim().slice(0, 32);
         localStorage.setItem("sync_username", username);
