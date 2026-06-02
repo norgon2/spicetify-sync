@@ -497,11 +497,6 @@
         }
       });
 
-      socket.on("reaction", ({ emoji, username: uname } = {}) => {
-        if (typeof emoji !== "string") return;
-        showReactionFloat(emoji);
-      });
-
       socket.on("vote_count", ({ count, total, needed } = {}) => {
         if (!isSafeNum(count, 0) || !isSafeNum(needed, 1)) return;
         updateSkipVoteUI(count, needed, mySkipVoted);
@@ -783,19 +778,6 @@
     ).join("");
   }
 
-  function showReactionFloat(emoji) {
-    const ref = document.getElementById("sync-toggle-btn") || document.body;
-    const rect = ref.getBoundingClientRect();
-    const el = document.createElement("div");
-    el.textContent = emoji;
-    const x = rect.left + rect.width / 2 - 14 + (Math.random() * 60 - 30);
-    const y = rect.top > 80 ? rect.top - 10 : rect.bottom + 10;
-    el.style.cssText = `position:fixed;left:${x}px;top:${y}px;font-size:28px;` +
-      `pointer-events:none;z-index:99999;animation:syncReactionFloat 2s ease-out forwards`;
-    document.body.appendChild(el);
-    setTimeout(() => el.remove(), 2100);
-  }
-
   function updateSkipVoteUI(count, needed, voted) {
     const btn = document.getElementById("sync-skip-btn");
     const lbl = document.getElementById("sync-skip-count");
@@ -822,7 +804,7 @@
     disc.textContent   = t("disconnect");
     const indR = qs(p, "#sync-indicator");
     if (indR) indR.style.display = "none";
-    ["#sync-history-section","#sync-reactions-row","#sync-skip-row"].forEach(sel => {
+    ["#sync-history-section","#sync-skip-row"].forEach(sel => {
       const el = qs(p, sel); if (el) el.style.display = "none";
     });
     mySkipVoted = false;
@@ -845,8 +827,6 @@
     if (ind) ind.style.display = r === "host" ? "none" : (lastSyncDrift !== null ? "block" : "none");
     const hist = qs(p, "#sync-history-section");
     if (hist) { hist.style.display = "flex"; updateHistoryUI(); }
-    const reac = qs(p, "#sync-reactions-row");
-    if (reac) reac.style.display = "flex";
     const skipRow = qs(p, "#sync-skip-row");
     if (skipRow) skipRow.style.display = r === "guest" && !cohostMode ? "flex" : "none";
     const hcs = qs(p, "#sync-host-code-section");
@@ -892,7 +872,7 @@
     qs(p, "#sync-room-info").style.display         = "none";
     const ind = qs(p, "#sync-indicator");
     if (ind) ind.style.display = "none";
-    ["#sync-history-section","#sync-reactions-row","#sync-skip-row"].forEach(sel => {
+    ["#sync-history-section","#sync-skip-row"].forEach(sel => {
       const el = qs(p, sel); if (el) el.style.display = "none";
     });
   }
@@ -1008,17 +988,6 @@
         to   { opacity: 0; transform: translateY(6px) scale(0.98); }
       }
       #sync-panel { animation: syncPopIn 0.18s cubic-bezier(0.4,0,0.2,1) forwards; }
-      @keyframes syncReactionFloat {
-        0%   { transform: translateY(0)     scale(1);   opacity: 1; }
-        100% { transform: translateY(-130px) scale(1.5); opacity: 0; }
-      }
-      .sync-reaction-btn {
-        background: none; border: none; cursor: pointer; font-size: 20px;
-        padding: 2px 4px; border-radius: 6px; transition: transform 0.1s;
-        line-height: 1;
-      }
-      .sync-reaction-btn:hover { transform: scale(1.25); }
-      .sync-reaction-btn:active { transform: scale(0.9); }
 
       #sync-toggle-btn { cursor: default !important; }
       #sync-toggle-btn:hover { cursor: default !important; }
@@ -1273,18 +1242,6 @@
     <div id="sync-history-list" style="display:flex;flex-direction:column;gap:3px"></div>
   </div>
 
-  <div id="sync-reactions-row" style="display:none;flex-direction:column;gap:6px">
-    <div style="font-size:9px;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:var(--spice-subtext,#a7a7a7)">Reactions</div>
-    <div style="display:flex;gap:4px;justify-content:space-between">
-      <button class="sync-reaction-btn" data-emoji="❤️">❤️</button>
-      <button class="sync-reaction-btn" data-emoji="🔥">🔥</button>
-      <button class="sync-reaction-btn" data-emoji="😂">😂</button>
-      <button class="sync-reaction-btn" data-emoji="😢">😢</button>
-      <button class="sync-reaction-btn" data-emoji="🎉">🎉</button>
-      <button class="sync-reaction-btn" data-emoji="👏">👏</button>
-    </div>
-  </div>
-
   <div id="sync-skip-row" style="display:none;align-items:center;gap:8px">
     <button id="sync-skip-btn" style="flex:1;padding:7px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:50px;color:var(--spice-text,#fff);font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;transition:opacity 0.15s">🗳 Vote to skip</button>
     <span id="sync-skip-count" style="font-size:11px;color:var(--spice-subtext,#a7a7a7);min-width:30px;text-align:right"></span>
@@ -1439,13 +1396,6 @@
       saveInputs("guest"); connect("guest");
     });
     qs(panel, "#sync-disconnect-btn").addEventListener("click", () => { disconnect(); resetPanelUI(); });
-
-    panel.querySelectorAll(".sync-reaction-btn").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        if (!socket?.connected) return;
-        socket.emit("reaction", { emoji: btn.dataset.emoji });
-      });
-    });
 
     const skipBtn = qs(panel, "#sync-skip-btn");
     if (skipBtn) {
