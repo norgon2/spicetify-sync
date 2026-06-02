@@ -51,7 +51,7 @@
     return String(v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
 
-  const MAX_POSITION_MS = 86400000; // 24 h â€” max reasonable track position
+  const MAX_POSITION_MS = 86400000; // 24 h — max reasonable track position
 
   function isSpotifyUri(v) {
     return typeof v === "string" && /^spotify:[a-z]+:[A-Za-z0-9]{22}$/.test(v);
@@ -88,64 +88,64 @@
       disconnect: "Disconnect", cancel: "Cancel",
       statusHost: "You are the host",
       statusGuest: "Connected as guest",
-      statusCohost: "Connected â€” co-host mode",
-      statusRecon: "Reconnectingâ€¦",
-      statusReconN: (n) => `Reconnectingâ€¦ (attempt ${n})`,
-      statusWaiting: "Waiting for hostâ€¦",
+      statusCohost: "Connected — co-host mode",
+      statusRecon: "Reconnecting…",
+      statusReconN: (n) => `Reconnecting… (attempt ${n})`,
+      statusWaiting: "Waiting for host…",
       cohostLabel: "Co-host mode", cohostDesc: "Guests can skip, play & pause",
       cohostNote: "You can control playback for everyone.",
-      settingsTitle: "Settings", back: "â† Back",
+      settingsTitle: "Settings", back: "← Back",
       autoConnect: "Auto-connect", autoConnectDesc: "Reconnect on Spotify start",
       language: "Language",
-      langAuto: "Auto (system)", langFr: "FranÃ§ais", langEn: "English",
+      langAuto: "Auto (system)", langFr: "Français", langEn: "English",
       showCode: "Show code in toolbar", showCodeDesc: "Display active room code next to the button",
       volumeSync: "Volume sync", volumeSyncDesc: "Sync volume between host and guests",
       syncDelay: "Sync delay (ms)", syncDelayDesc: "Extra offset to compensate custom latency",
       soundNotif: "Notification sounds", soundNotifDesc: "Play a sound when guests join or leave",
       sectionGeneral: "General", sectionSession: "Session",
       connectedAs: (r, name) => `Connected as ${r} (${name})`,
-      cohostModeOn: "Co-host mode ON â€” you can now control playback.",
+      cohostModeOn: "Co-host mode ON — you can now control playback.",
       cohostModeOff: "Co-host mode OFF.",
-      cannotReach: "Cannot reach server â€” retryingâ€¦",
+      cannotReach: "Cannot reach server — retrying…",
       reconnFailed: "Could not connect after 10 attempts.",
-      connLost: "Connection lost â€” reconnectingâ€¦",
-      hostConnected: "Host connected â€” syncingâ€¦",
+      connLost: "Connection lost — reconnecting…",
+      hostConnected: "Host connected — syncing…",
       hostLeft: "Host disconnected.",
     },
     fr: {
       appName: "Spicetify Sync",
       server: "Serveur", serverPh: "localhost ou URL ngrok",
       username: "Nom d'utilisateur", usernamePh: "Votre nom",
-      roomCode: "Code de room", roomCodePh: "Code Ã  6 caractÃ¨res (invitÃ©s)",
+      roomCode: "Code de room", roomCodePh: "Code Ã  6 caractères (invités)",
       yourCode: "Votre code de room", copyCode: "Copier",
-      codeCopied: "Code copiÃ© !",
-      host: "HÃ´te", guest: "InvitÃ©",
-      disconnect: "DÃ©connecter", cancel: "Annuler",
-      statusHost: "Vous Ãªtes l'hÃ´te",
-      statusGuest: "ConnectÃ© en tant qu'invitÃ©",
-      statusCohost: "ConnectÃ© â€” mode co-hÃ´te",
-      statusRecon: "Reconnexionâ€¦",
-      statusReconN: (n) => `Reconnexionâ€¦ (tentative ${n})`,
-      statusWaiting: "En attente de l'hÃ´teâ€¦",
-      cohostLabel: "Mode co-hÃ´te", cohostDesc: "Les invitÃ©s contrÃ´lent la lecture",
-      cohostNote: "Vous pouvez contrÃ´ler la lecture pour tous.",
-      settingsTitle: "ParamÃ¨tres", back: "â† Retour",
-      autoConnect: "Connexion automatique", autoConnectDesc: "Se reconnecter au dÃ©marrage",
+      codeCopied: "Code copié !",
+      host: "Hôte", guest: "Invité",
+      disconnect: "Déconnecter", cancel: "Annuler",
+      statusHost: "Vous êtes l'hôte",
+      statusGuest: "Connecté en tant qu'invité",
+      statusCohost: "Connecté — mode co-hôte",
+      statusRecon: "Reconnexion…",
+      statusReconN: (n) => `Reconnexion… (tentative ${n})`,
+      statusWaiting: "En attente de l'hôte…",
+      cohostLabel: "Mode co-hôte", cohostDesc: "Les invités contrôlent la lecture",
+      cohostNote: "Vous pouvez contrôler la lecture pour tous.",
+      settingsTitle: "Paramètres", back: "← Retour",
+      autoConnect: "Connexion automatique", autoConnectDesc: "Se reconnecter au démarrage",
       language: "Langue",
-      langAuto: "Auto (systÃ¨me)", langFr: "FranÃ§ais", langEn: "English",
-      showCode: "Afficher le code dans la barre", showCodeDesc: "Affiche le code de room actif Ã  cÃ´tÃ© du bouton",
-      volumeSync: "Sync du volume", volumeSyncDesc: "Synchronise le volume entre hÃ´te et invitÃ©s",
-      syncDelay: "DÃ©lai de sync (ms)", syncDelayDesc: "DÃ©calage supplÃ©mentaire pour compenser la latence",
-      soundNotif: "Sons de notification", soundNotifDesc: "Joue un son quand un invitÃ© rejoint ou quitte",
-      sectionGeneral: "GÃ©nÃ©ral", sectionSession: "Session",
-      connectedAs: (r, name) => `ConnectÃ© en tant que ${r} (${name})`,
-      cohostModeOn: "Mode co-hÃ´te activÃ© â€” vous pouvez contrÃ´ler la lecture.",
-      cohostModeOff: "Mode co-hÃ´te dÃ©sactivÃ©.",
-      cannotReach: "Impossible de joindre le serveur â€” reconnexionâ€¦",
-      reconnFailed: "Impossible de se connecter aprÃ¨s 10 tentatives.",
-      connLost: "Connexion perdue â€” reconnexionâ€¦",
-      hostConnected: "HÃ´te connectÃ© â€” synchronisationâ€¦",
-      hostLeft: "HÃ´te dÃ©connectÃ©.",
+      langAuto: "Auto (système)", langFr: "Français", langEn: "English",
+      showCode: "Afficher le code dans la barre", showCodeDesc: "Affiche le code de room actif Ã  côté du bouton",
+      volumeSync: "Sync du volume", volumeSyncDesc: "Synchronise le volume entre hôte et invités",
+      syncDelay: "Délai de sync (ms)", syncDelayDesc: "Décalage supplémentaire pour compenser la latence",
+      soundNotif: "Sons de notification", soundNotifDesc: "Joue un son quand un invité rejoint ou quitte",
+      sectionGeneral: "Général", sectionSession: "Session",
+      connectedAs: (r, name) => `Connecté en tant que ${r} (${name})`,
+      cohostModeOn: "Mode co-hôte activé — vous pouvez contrôler la lecture.",
+      cohostModeOff: "Mode co-hôte désactivé.",
+      cannotReach: "Impossible de joindre le serveur — reconnexion…",
+      reconnFailed: "Impossible de se connecter après 10 tentatives.",
+      connLost: "Connexion perdue — reconnexion…",
+      hostConnected: "Hôte connecté — synchronisation…",
+      hostLeft: "Hôte déconnecté.",
     },
   };
   function getLang() {
@@ -160,7 +160,7 @@
   }
 
   // --------------------------------------------------------------------------
-  // Web Audio beep â€” backup ctx.close() if onended doesn't fire
+  // Web Audio beep — backup ctx.close() if onended doesn't fire
   // --------------------------------------------------------------------------
   function playBeep(join) {
     if (!settings.soundNotif) return;
@@ -555,7 +555,7 @@
   }
 
   // --------------------------------------------------------------------------
-  // Seek poll â€” adaptive timing (50ms playing, 200ms paused)
+  // Seek poll — adaptive timing (50ms playing, 200ms paused)
   //         Detects manual seeks by comparing actual playhead against expected
   //         position (baseline + elapsed). Deviation > 500ms triggers a
   //         150ms-debounced broadcast, absorbing rapid scrubbing into one event.
@@ -723,10 +723,10 @@
     const g = escHtml(guests);
     ri.innerHTML =
       `<span style="color:var(--spice-button,#1db954)">${h} host${hosts !== 1 ? "s" : ""}</span>` +
-      `<span style="color:rgba(255,255,255,0.2);margin:0 6px">Â·</span>` +
+      `<span style="color:rgba(255,255,255,0.2);margin:0 6px">·</span>` +
       `<span style="color:#1e90ff">${g} guest${guests !== 1 ? "s" : ""}</span>` +
       (cohostMode
-        ? `<span style="color:rgba(255,255,255,0.2);margin:0 6px">Â·</span>` +
+        ? `<span style="color:rgba(255,255,255,0.2);margin:0 6px">·</span>` +
           `<span style="color:var(--spice-button,#1db954);font-weight:700">co-host on</span>`
         : "");
   }
@@ -1058,7 +1058,7 @@
     <button id="sync-guest-btn" style="${BTN_GHO}">${t("guest")}</button>
   </div>
   <div id="sync-status-section" style="display:none;flex-direction:column;gap:10px">
-    <div id="sync-status-text" style="font-size:13px;font-weight:600;color:var(--spice-button,#1db954)">â€¦</div>
+    <div id="sync-status-text" style="font-size:13px;font-weight:600;color:var(--spice-button,#1db954)">…</div>
     <div id="sync-host-code-section" style="display:none;padding:10px 12px;background:rgba(29,185,84,0.07);border:1px solid rgba(29,185,84,0.2);border-radius:8px;text-align:center">
       <div style="font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--spice-subtext,#a7a7a7);margin-bottom:8px">${t("yourCode")}</div>
       <div id="sync-host-room-code" style="font-size:26px;font-weight:900;letter-spacing:0.25em;color:var(--spice-button,#1db954);font-family:monospace">______</div>
@@ -1290,7 +1290,7 @@
     btn.id = "sync-toggle-btn";
     btn.setAttribute("aria-label", t("appName"));
     btn.setAttribute("data-tooltip", t("appName"));
-    // IMPORTANT: copy classes from native button â€” do not change this mechanism
+    // IMPORTANT: copy classes from native button — do not change this mechanism
     const nativeBtn = document.querySelector(".main-nowPlayingBar-extraControls button");
     if (nativeBtn && nativeBtn.className) {
       btn.className = nativeBtn.className;
@@ -1366,7 +1366,7 @@
   }
 
   // --------------------------------------------------------------------------
-  // Init â€” cap DOM readiness poll at 20 attempts
+  // Init — cap DOM readiness poll at 20 attempts
   // --------------------------------------------------------------------------
   function init() {
     let attempts = 0;
