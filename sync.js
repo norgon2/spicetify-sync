@@ -33,6 +33,8 @@
   let lastRoomInfo   = { hosts: 0, guests: 0 };
   let waitingForHost      = false;
   let lastConnectClick    = 0;
+  let syncCheckTimer      = null;
+  let lastSyncDrift       = null;
 
   // Prevents event echo: applying a remote command triggers local Player events
   // (onplaypause, songchange) that would re-broadcast it. suppressFor() increments
@@ -248,6 +250,7 @@
         showNotification(t("connectedAs", r, username));
         setConnectedPanelUI(r);
         if (r === "guest") socket.emit("request_sync");
+        if (r === "host")  startSyncCheck();
         startSeekPoll();
       });
 
@@ -282,6 +285,7 @@
         isConnected    = false;
         role           = null;
         waitingForHost = false;
+        stopSyncCheck();
         stopSeekPoll();
         updateButtonState();
         updateToolbarCode();
@@ -485,6 +489,25 @@
           try { Spicetify.Player.setVolume?.(volume); } catch (_) {}
         }
       });
+
+      socket.on("sync_ping", ({ uri, position, isPlaying, sentAt } = {}) => {
+        if (role !== "guest" || !isConnected || waitingForHost) return;
+        if (!isSpotifyUri(uri) || !isSafeNum(position, 0, MAX_POSITION_MS) || !isSafeNum(sentAt, 0)) return;
+        const state = Player.data;
+        if (!state?.item?.uri) return;
+        const uriMatch = state.item.uri === uri;
+        if (!uriMatch) {
+          updateSyncIndicator(Infinity, false);
+          if (!suppressCount) socket.emit("request_sync");
+          return;
+        }
+        const elapsed     = Math.max(0, Date.now() - sentAt);
+        const expectedPos = Math.min(position + (isPlaying ? elapsed : 0), MAX_POSITION_MS);
+        const guestPos    = state.positionAsOfTimestamp || 0;
+        const drift       = Math.abs(guestPos - expectedPos);
+        updateSyncIndicator(drift, true);
+        if (drift > 2000 && !suppressCount) socket.emit("request_sync");
+      });
     });
   }
 
@@ -495,6 +518,8 @@
     guestCount     = 0;
     lastRoomInfo   = { hosts: 0, guests: 0 };
     waitingForHost = false;
+    lastSyncDrift  = null;
+    stopSyncCheck();
     stopSeekPoll();
     unregisterPlayerListeners();
     if (socket) { socket.disconnect(); socket = null; }
@@ -651,6 +676,54 @@
   }
 
   // --------------------------------------------------------------------------
+  // Sync check — host broadcasts state every 10s; guests measure drift
+  // --------------------------------------------------------------------------
+  function startSyncCheck() {
+    stopSyncCheck();
+    syncCheckTimer = setInterval(() => {
+      if (!socket?.connected || role !== "host") { stopSyncCheck(); return; }
+      const state = Player.data;
+      if (!state?.item?.uri) return;
+      socket.emit("sync_ping", {
+        uri:       state.item.uri,
+        position:  state.positionAsOfTimestamp || 0,
+        isPlaying: !state.isPaused,
+        sentAt:    Date.now(),
+      });
+    }, 10000);
+  }
+
+  function stopSyncCheck() {
+    clearInterval(syncCheckTimer);
+    syncCheckTimer = null;
+  }
+
+  function updateSyncIndicator(drift, uriMatch) {
+    lastSyncDrift = isFinite(drift) ? drift : Infinity;
+    const el = document.getElementById("sync-indicator");
+    if (!el) return;
+    let text, color, bg;
+    if (!uriMatch) {
+      text = "⚠ Wrong track";  color = "#e22134"; bg = "rgba(226,33,52,0.12)";
+    } else if (drift < 500) {
+      text = "✓ In sync";      color = "#1db954"; bg = "rgba(29,185,84,0.12)";
+    } else if (drift < 2000) {
+      text = `~ ${Math.round(drift)} ms`;  color = "#f59b00"; bg = "rgba(245,155,0,0.12)";
+    } else {
+      text = `⚠ ${(drift / 1000).toFixed(1)} s`;  color = "#e22134"; bg = "rgba(226,33,52,0.12)";
+    }
+    el.textContent = text;
+    el.style.color = color;
+    el.style.background = bg;
+    el.style.display = "block";
+  }
+
+  function hideSyncIndicator() {
+    const el = document.getElementById("sync-indicator");
+    if (el) el.style.display = "none";
+  }
+
+  // --------------------------------------------------------------------------
   // Panel UI helpers
   // --------------------------------------------------------------------------
   function getPanel() { return document.getElementById("sync-panel"); }
@@ -667,6 +740,8 @@
     const disc = qs(p, "#sync-disconnect-btn");
     disc.style.display = "none";
     disc.textContent   = t("disconnect");
+    const indR = qs(p, "#sync-indicator");
+    if (indR) indR.style.display = "none";
   }
 
   function setConnectedPanelUI(r) {
@@ -682,6 +757,8 @@
     st.style.color = r === "host" ? "var(--spice-button, #1db954)" : "#1e90ff";
     qs(p, "#sync-cohost-row").style.display        = r === "host" ? "flex" : "none";
     qs(p, "#sync-guest-cohost-note").style.display = "none";
+    const ind = qs(p, "#sync-indicator");
+    if (ind) ind.style.display = r === "host" ? "none" : (lastSyncDrift !== null ? "block" : "none");
     const hcs = qs(p, "#sync-host-code-section");
     if (r === "host" && roomCode) {
       const codeEl = qs(p, "#sync-host-room-code");
@@ -723,6 +800,8 @@
     qs(p, "#sync-cohost-row").style.display        = "none";
     qs(p, "#sync-guest-cohost-note").style.display = "none";
     qs(p, "#sync-room-info").style.display         = "none";
+    const ind = qs(p, "#sync-indicator");
+    if (ind) ind.style.display = "none";
   }
 
   function updateRoomInfo(hosts, guests) {
@@ -1070,6 +1149,7 @@
   </div>
   <div id="sync-status-section" style="display:none;flex-direction:column;gap:10px">
     <div id="sync-status-text" style="font-size:13px;font-weight:600;color:var(--spice-button,#1db954)">…</div>
+    <div id="sync-indicator" style="display:none;font-size:11px;font-weight:700;padding:3px 10px;border-radius:50px;text-align:center;letter-spacing:0.01em;color:#1db954;background:rgba(29,185,84,0.12)"></div>
     <div id="sync-host-code-section" style="display:none;padding:10px 12px;background:rgba(29,185,84,0.07);border:1px solid rgba(29,185,84,0.2);border-radius:8px;text-align:center">
       <div style="font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--spice-subtext,#a7a7a7);margin-bottom:8px">${t("yourCode")}</div>
       <div id="sync-host-room-code" style="font-size:26px;font-weight:900;letter-spacing:0.25em;color:var(--spice-button,#1db954);font-family:monospace">______</div>
@@ -1297,6 +1377,7 @@
         updateRoomInfo(lastRoomInfo.hosts, lastRoomInfo.guests);
         qs(panel, "#sync-cohost-toggle").checked = cohostMode;
         if (role === "guest" && cohostMode) qs(panel, "#sync-guest-cohost-note").style.display = "block";
+        if (role === "guest" && lastSyncDrift !== null) updateSyncIndicator(lastSyncDrift, lastSyncDrift !== Infinity);
       }
     } else if (reconnecting) {
       setReconnectingPanelUI();
