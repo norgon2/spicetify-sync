@@ -1,14 +1,13 @@
 // Spicetify Sync Extension - v2
 (function SpicetifySync() {
   const { Player, Platform, React, ReactDOM } = Spicetify;
-  // Item 8: cap retry attempts for Spicetify readiness
   if (!Player || !Platform || !React || !ReactDOM) {
     if ((SpicetifySync._retries = (SpicetifySync._retries || 0) + 1) < 20)
       setTimeout(SpicetifySync, 300);
     return;
   }
 
-  const PROTOCOL_VERSION = 1; // Item 9
+  const PROTOCOL_VERSION = 1;
 
   // --------------------------------------------------------------------------
   // State
@@ -40,18 +39,14 @@
     return role === "host" || (cohostMode && role === "guest");
   }
 
-  // --------------------------------------------------------------------------
-  // Item 2: HTML escape helper
-  // --------------------------------------------------------------------------
   function escHtml(v) {
     return String(v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
 
-  // --------------------------------------------------------------------------
-  // Item 3: Socket data validators
-  // --------------------------------------------------------------------------
+  const MAX_POSITION_MS = 86400000; // 24 h — max reasonable track position
+
   function isSpotifyUri(v) {
-    return typeof v === "string" && v.startsWith("spotify:");
+    return typeof v === "string" && /^spotify:[a-z]+:[A-Za-z0-9]{22}$/.test(v);
   }
   function isSafeNum(v, min = 0, max = Infinity) {
     return typeof v === "number" && isFinite(v) && v >= min && v <= max;
@@ -65,7 +60,7 @@
     lang:        localStorage.getItem("sync_lang") || "auto",
     showCode:    localStorage.getItem("sync_showCode") === "true",
     volumeSync:  localStorage.getItem("sync_volumeSync") === "true",
-    syncDelay:   parseInt(localStorage.getItem("sync_syncDelay") || "0", 10) || 0,
+    syncDelay:   Math.max(0, parseInt(localStorage.getItem("sync_syncDelay") || "0", 10) || 0),
     soundNotif:  localStorage.getItem("sync_soundNotif") !== "false",
   };
   function saveSetting(key, value) {
@@ -157,7 +152,7 @@
   }
 
   // --------------------------------------------------------------------------
-  // Web Audio beep — Item 11: backup ctx.close() if onended doesn't fire
+  // Web Audio beep — backup ctx.close() if onended doesn't fire
   // --------------------------------------------------------------------------
   function playBeep(join) {
     if (!settings.soundNotif) return;
@@ -185,11 +180,11 @@
   }
 
   // --------------------------------------------------------------------------
-  // Socket.io loader — Item 1: SRI integrity + crossOrigin
+  // Socket.io loader — SRI integrity + crossOrigin
   // --------------------------------------------------------------------------
   let socketIOCallbacks = null;
   function loadSocketIO(callback) {
-    if (window.io) { callback(); return; }
+    if (typeof window.io === "function") { callback(); return; }
     if (socketIOCallbacks !== null) { socketIOCallbacks.push(callback); return; }
     socketIOCallbacks = [callback];
     const script = document.createElement("script");
@@ -208,9 +203,6 @@
     document.head.appendChild(script);
   }
 
-  // --------------------------------------------------------------------------
-  // Connection — Item 6: reconnectionAttempts: 10, Item 9: PROTOCOL_VERSION
-  // --------------------------------------------------------------------------
   // Host creates the room; server assigns a code via room_created.
   // Guest joins with the 6-char code. Both roles re-register using the
   // closure-captured selectedRole on every Socket.io auto-reconnect.
@@ -225,7 +217,7 @@
     guestCount      = 0;
     lastRoomInfo    = { hosts: 0, guests: 0 };
     waitingForHost  = false;
-    registerPlayerListeners(); // Item 5
+    registerPlayerListeners();
 
     loadSocketIO(() => {
       const isLocal = serverIP === "localhost" || serverIP === "127.0.0.1";
@@ -240,7 +232,7 @@
         transports: ["websocket"],
         reconnectionDelay: 1000,
         reconnectionDelayMax: 8000,
-        reconnectionAttempts: 10, // Item 6: was Infinity
+        reconnectionAttempts: 10,
       });
 
       socket.on("connect", () => {
@@ -248,7 +240,7 @@
         role         = selectedRole;
         reconnecting = false;
         lastVolume   = null;
-        const regPayload = { role, username, roomCode, version: PROTOCOL_VERSION }; // Item 9
+        const regPayload = { role, username, roomCode, version: PROTOCOL_VERSION };
         if (role === "host" && roomCode) regPayload.requestedCode = roomCode;
         socket.emit("register", regPayload);
         updateButtonState();
@@ -309,7 +301,6 @@
       });
 
       socket.on("room_update", ({ hosts, guests }) => {
-        // Item 3: validate server data before use
         if (!isSafeNum(hosts, 0) || !isSafeNum(guests, 0)) return;
         if (lastGuestCount !== null && guests !== lastGuestCount) {
           playBeep(guests > lastGuestCount);
@@ -331,7 +322,6 @@
       });
 
       socket.on("room_created", ({ code } = {}) => {
-        // Item 3: validate code is a 6-char alphanumeric string
         if (typeof code !== "string" || !/^[A-Z0-9]{6}$/i.test(code)) return;
         roomCode = code.toUpperCase();
         localStorage.setItem("sync_roomCode", roomCode);
@@ -367,13 +357,12 @@
       });
 
       socket.on("play", async ({ uri, position, contextUri } = {}) => {
-        // Item 3: validate before acting on server data
         if (!isConnected || !isSpotifyUri(uri)) return;
-        if (position != null && !isSafeNum(position, 0)) return;
+        if (position != null && !isSafeNum(position, 0, MAX_POSITION_MS)) return;
         try {
           if (uri && Player.data?.item?.uri !== uri) {
             suppressFor(1200);
-            if (contextUri && contextUri !== uri) {
+            if (contextUri && isSpotifyUri(contextUri) && contextUri !== uri) {
               await Player.playUri(contextUri, {}, { skipTo: { uri }, seekTo: position || 0 });
             } else {
               await Player.playUri(uri, {}, { seekTo: position || 0 });
@@ -385,24 +374,22 @@
             await Player.play();
             resetSeekBaseline(position ?? null);
           }
-        } catch (e) { console.error("[Sync] play:", e); } // Item 12
+        } catch (e) { console.error("[Sync] play:", e); }
       });
 
       socket.on("pause", async ({ position } = {}) => {
-        // Item 3: validate
         if (!isConnected) return;
-        if (position != null && !isSafeNum(position, 0)) return;
+        if (position != null && !isSafeNum(position, 0, MAX_POSITION_MS)) return;
         suppressFor(600);
         try {
           if (position != null) await Player.seek(position);
           await Player.pause();
           resetSeekBaseline(position ?? null);
-        } catch (e) { console.error("[Sync] pause:", e); } // Item 12
+        } catch (e) { console.error("[Sync] pause:", e); }
       });
 
       socket.on("seek", async ({ position, sentAt } = {}) => {
-        // Item 3: validate
-        if (!isConnected || !isSafeNum(position, 0)) return;
+        if (!isConnected || !isSafeNum(position, 0, MAX_POSITION_MS)) return;
         suppressFor(800);
         try {
           const halfRtt = (sentAt && isSafeNum(sentAt, 0))
@@ -411,17 +398,16 @@
           const adjPos = position + halfRtt + settings.syncDelay;
           await Player.seek(adjPos);
           resetSeekBaseline(adjPos);
-        } catch (e) { console.error("[Sync] seek:", e); } // Item 12
+        } catch (e) { console.error("[Sync] seek:", e); }
       });
 
       let changeSeq = 0;
       socket.on("change_track", async ({ uri, position, contextUri } = {}) => {
-        // Item 3: validate
         if (!isConnected || !isSpotifyUri(uri)) return;
         const seq = ++changeSeq;
         suppressFor(1200);
         try {
-          if (contextUri && contextUri !== uri) {
+          if (contextUri && isSpotifyUri(contextUri) && contextUri !== uri) {
             await Player.playUri(contextUri, {}, { skipTo: { uri }, seekTo: position || 0 });
           } else {
             await Player.playUri(uri, {}, { seekTo: position || 0 });
@@ -429,7 +415,7 @@
           if (seq !== changeSeq) return;
           resetSeekBaseline(position || 0);
         } catch (e) {
-          console.error("[Sync] change_track:", e); // Item 12
+          console.error("[Sync] change_track:", e);
           if (seq !== changeSeq) return;
           try {
             await Player.playUri(uri, {}, { seekTo: position || 0 });
@@ -440,8 +426,7 @@
 
       let syncSeq = 0;
       socket.on("sync_state", async ({ uri, position, isPlaying, contextUri, sentAt } = {}) => {
-        // Item 3: validate
-        if (role !== "guest" || !isSpotifyUri(uri) || !isSafeNum(position, 0)) return;
+        if (role !== "guest" || !isSpotifyUri(uri) || !isSafeNum(position, 0, MAX_POSITION_MS)) return;
         const seq = ++syncSeq;
         suppressFor(1500);
         try {
@@ -451,7 +436,7 @@
           const adjPos = position + latency + settings.syncDelay;
           if (Player.data?.item?.uri !== uri) {
             try {
-              if (contextUri && contextUri !== uri) {
+              if (contextUri && isSpotifyUri(contextUri) && contextUri !== uri) {
                 await Player.playUri(contextUri, {}, { skipTo: { uri }, seekTo: adjPos });
               } else {
                 await Player.playUri(uri, {}, { seekTo: adjPos });
@@ -475,11 +460,10 @@
               await Player.pause();
             }
           }
-        } catch (e) { console.error("[Sync] sync_state:", e); } // Item 12
+        } catch (e) { console.error("[Sync] sync_state:", e); }
       });
 
       socket.on("sync_requested", ({ guestId } = {}) => {
-        // Item 3: validate guestId is a string
         if (role !== "host" || typeof guestId !== "string") return;
         const state = Player.data;
         if (!state?.item?.uri) return;
@@ -494,7 +478,6 @@
       });
 
       socket.on("volume_change", async ({ volume } = {}) => {
-        // Item 3: validate volume is a number strictly in [0, 1]
         if (!isConnected || role !== "guest" || !settings.volumeSync) return;
         if (!isSafeNum(volume, 0, 1)) return;
         lastVolume = volume;
@@ -515,7 +498,7 @@
     lastRoomInfo   = { hosts: 0, guests: 0 };
     waitingForHost = false;
     stopSeekPoll();
-    unregisterPlayerListeners(); // Item 5
+    unregisterPlayerListeners();
     if (socket) { socket.disconnect(); socket = null; }
     isConnected = false;
     role        = null;
@@ -525,7 +508,7 @@
   }
 
   // --------------------------------------------------------------------------
-  // Item 5: Named Player listener functions + registration tracking
+  // Player listener functions + registration tracking
   // --------------------------------------------------------------------------
   let playerListenersRegistered = false;
 
@@ -584,7 +567,7 @@
   }
 
   // --------------------------------------------------------------------------
-  // Item 4: Seek poll — adaptive timing (50ms playing, 200ms paused)
+  // Seek poll — adaptive timing (50ms playing, 200ms paused)
   //         Detects manual seeks by comparing actual playhead against expected
   //         position (baseline + elapsed). Deviation > 500ms triggers a
   //         150ms-debounced broadcast, absorbing rapid scrubbing into one event.
@@ -614,7 +597,7 @@
       const now    = Date.now();
       const pos    = state.positionAsOfTimestamp || 0;
       const paused = state.isPaused;
-      const delay  = paused ? 200 : 50; // Item 4: slower when paused
+      const delay  = paused ? 200 : 50;
 
       if (!isController() || !socket?.connected) {
         seekPollPos  = pos; seekPollTime = now;
@@ -743,7 +726,6 @@
     qs(p, "#sync-room-info").style.display         = "none";
   }
 
-  // Item 2: use escHtml for server-provided numbers inserted into innerHTML
   function updateRoomInfo(hosts, guests) {
     const p = getPanel(); if (!p) return;
     const ri = qs(p, "#sync-room-info");
@@ -985,8 +967,6 @@
     p.addEventListener("animationend", () => p.remove(), { once: true });
   }
 
-  // Item 7: No inline onfocus/onblur/onmouseover/onmouseout/onmousedown/onmouseup/oninput handlers.
-  //         All visual effects are wired via addEventListener after panel injection.
   function buildPanel() {
     injectStyles();
     const panel = document.createElement("div");
@@ -1179,7 +1159,6 @@
     qs(panel, "#sync-username").value  = username;
     qs(panel, "#sync-room-code").value = "";
 
-    // Item 7: Wire all visual effects via addEventListener (no inline handlers)
     function addInputFocus(id) {
       const el = qs(panel, `#${id}`);
       el.addEventListener("focus", () => { el.style.borderColor = "rgba(255,255,255,0.25)"; });
@@ -1226,7 +1205,7 @@
 
     function saveInputs(selectedRole) {
       serverIP = qs(panel, "#sync-ip").value.trim() || "spicetify-sync-server.onrender.com";
-      username = qs(panel, "#sync-username").value.trim().slice(0, 32) || "User"; // Item 10
+      username = qs(panel, "#sync-username").value.trim().slice(0, 32) || "User";
       const inputCode = qs(panel, "#sync-room-code").value.trim().toUpperCase();
       roomCode = selectedRole === "guest" ? inputCode : (inputCode || roomCode);
       localStorage.setItem("sync_serverIP", serverIP);
@@ -1234,8 +1213,14 @@
       localStorage.setItem("sync_roomCode", roomCode);
     }
 
-    qs(panel, "#sync-host-btn").addEventListener("click", () => { saveInputs("host"); connect("host"); });
-    qs(panel, "#sync-guest-btn").addEventListener("click", () => { saveInputs("guest"); connect("guest"); });
+    qs(panel, "#sync-host-btn").addEventListener("click", () => {
+      if (socketIOCallbacks !== null) return;
+      saveInputs("host"); connect("host");
+    });
+    qs(panel, "#sync-guest-btn").addEventListener("click", () => {
+      if (socketIOCallbacks !== null) return;
+      saveInputs("guest"); connect("guest");
+    });
     qs(panel, "#sync-disconnect-btn").addEventListener("click", () => { disconnect(); resetPanelUI(); });
     copyBtn.addEventListener("click", () => {
       if (!roomCode) return;
@@ -1395,7 +1380,7 @@
   }
 
   // --------------------------------------------------------------------------
-  // Init — Item 8: cap DOM readiness poll at 20 attempts
+  // Init — cap DOM readiness poll at 20 attempts
   // --------------------------------------------------------------------------
   function init() {
     let attempts = 0;
@@ -1407,7 +1392,7 @@
       if (ready) {
         injectStyles();
         createToolbarButton();
-        registerPlayerListeners(); // Item 5: register once here
+        registerPlayerListeners();
         maybeAutoConnect();
       } else if (++attempts < 20) {
         setTimeout(tryInit, 500);
