@@ -215,7 +215,7 @@
         return;
       }
       const isLocal = serverIP === "localhost" || serverIP === "127.0.0.1";
-      const isIP    = /^[\d.]+/.test(serverIP);
+      const isIP    = /^[\d.]+$/.test(serverIP);
       const serverURL = isLocal
         ? `http://${serverIP}:3000`
         : isIP
@@ -445,7 +445,7 @@
             resetSeekBaseline(adjPos);
             if (!isPlaying) {
               await new Promise((r) => setTimeout(r, 800));
-              if (seq === syncSeq) await Player.pause();
+              if (seq === syncSeq) { suppressFor(600); await Player.pause(); }
             }
           } else {
             await Player.seek(adjPos);
@@ -1379,7 +1379,8 @@
   function maybeAutoConnect() {
     if (!settings.autoConnect) return;
     const lastRole = localStorage.getItem("sync_lastRole");
-    if (!lastRole || isConnected || reconnecting) return;
+    if (lastRole !== "host" && lastRole !== "guest") return;
+    if (isConnected || reconnecting) return;
     setTimeout(() => {
       if (!isConnected && !reconnecting) connect(lastRole);
     }, 1500);
