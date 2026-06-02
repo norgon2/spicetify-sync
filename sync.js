@@ -104,6 +104,7 @@
       cohostModeOn: "Co-host mode ON — you can now control playback.",
       cohostModeOff: "Co-host mode OFF.",
       cannotReach: "Cannot reach server — retrying…",
+      reconnFailed: "Could not connect after 10 attempts.",
       connLost: "Connection lost — reconnecting…",
       hostConnected: "Host connected — syncing…",
       hostLeft: "Host disconnected.",
@@ -138,6 +139,7 @@
       cohostModeOn: "Mode co-hôte activé — vous pouvez contrôler la lecture.",
       cohostModeOff: "Mode co-hôte désactivé.",
       cannotReach: "Impossible de joindre le serveur — reconnexion…",
+      reconnFailed: "Impossible de se connecter après 10 tentatives.",
       connLost: "Connexion perdue — reconnexion…",
       hostConnected: "Hôte connecté — synchronisation…",
       hostLeft: "Hôte déconnecté.",
@@ -273,6 +275,13 @@
         reconnecting = true;
         updateButtonState();
         setReconnectingPanelUI(n);
+      });
+
+      socket.on("reconnect_failed", () => {
+        showNotification(t("reconnFailed"), true);
+        reconnecting = false;
+        disconnect();
+        resetPanelUI();
       });
 
       socket.on("error", ({ message = "Unknown error" } = {}) => {
