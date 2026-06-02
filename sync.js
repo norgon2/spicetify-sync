@@ -243,6 +243,7 @@
       });
 
       socket.on("registered", ({ role: r }) => {
+        role           = r;
         waitingForHost = false;
         showNotification(t("connectedAs", r, username));
         setConnectedPanelUI(r);
@@ -355,7 +356,7 @@
         if (!isConnected || !isSpotifyUri(uri)) return;
         if (position != null && !isSafeNum(position, 0, MAX_POSITION_MS)) return;
         try {
-          if (uri && Player.data?.item?.uri !== uri) {
+          if (Player.data?.item?.uri !== uri) {
             suppressFor(1200);
             if (contextUri && isSpotifyUri(contextUri) && contextUri !== uri) {
               await Player.playUri(contextUri, {}, { skipTo: { uri }, seekTo: position || 0 });
