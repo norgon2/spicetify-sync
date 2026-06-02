@@ -540,7 +540,7 @@
   }
 
   function onVolumeChange() {
-    if (!isController() || !socket?.connected || !settings.volumeSync) return;
+    if (!isController() || suppressCount > 0 || !socket?.connected || !settings.volumeSync) return;
     const vol = Player.data?.volume ?? null;
     if (vol === null || vol === lastVolume) return;
     lastVolume = vol;
@@ -1220,6 +1220,10 @@
     qs(panel, "#sync-guest-btn").addEventListener("click", () => {
       const now = Date.now();
       if (now - lastConnectClick < 1000) return;
+      if (!qs(panel, "#sync-room-code").value.trim()) {
+        showNotification(t("roomCodePh"), true);
+        return;
+      }
       lastConnectClick = now;
       saveInputs("guest"); connect("guest");
     });
