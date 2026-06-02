@@ -577,8 +577,9 @@
     guestCount     = 0;
     lastRoomInfo   = { hosts: 0, guests: 0 };
     waitingForHost = false;
-    lastSyncDrift  = null;
-    participants   = [];
+    lastSyncDrift      = null;
+    _lastRoomInfoHtml  = null;
+    participants       = [];
     stopParticipantsTimer();
     stopSyncCheck();
     stopSeekPoll();
@@ -1040,6 +1041,9 @@
     qs(p, "#sync-guest-cohost-note").style.display = "none";
     qs(p, "#sync-room-info").style.display         = "none";
     qs(p, "#sync-host-code-section").style.display = "none";
+    ["#sync-participants-section","#sync-history-section","#sync-skip-row","#sync-indicator"].forEach(sel => {
+      const el = qs(p, sel); if (el) el.style.display = "none";
+    });
   }
 
   function setWaitingPanelUI() {
@@ -1093,6 +1097,8 @@
         st.textContent = cohostMode ? t("statusCohost") : t("statusGuest");
         st.style.color = cohostMode ? "var(--spice-button,#1db954)" : "#1e90ff";
       }
+      const skipRow = qs(p, "#sync-skip-row");
+      if (skipRow) skipRow.style.display = (isConnected && !waitingForHost && !cohostMode) ? "flex" : "none";
     }
     updateRoomInfo(lastRoomInfo.hosts, lastRoomInfo.guests);
   }
@@ -1669,9 +1675,8 @@
         setWaitingPanelUI();
       } else {
         setConnectedPanelUI(role);
+        updateCohostSection();
         updateRoomInfo(lastRoomInfo.hosts, lastRoomInfo.guests);
-        qs(panel, "#sync-cohost-toggle").checked = cohostMode;
-        if (role === "guest" && cohostMode) qs(panel, "#sync-guest-cohost-note").style.display = "block";
         if (role === "guest" && lastSyncDrift !== null) updateSyncIndicator(lastSyncDrift, lastSyncDrift !== Infinity);
         updateHistoryUI();
         updateSkipVoteUI(0, 1, mySkipVoted);
