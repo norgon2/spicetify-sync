@@ -35,6 +35,10 @@
   let lastConnectClick    = 0;
   let syncCheckTimer      = null;
   let lastSyncDrift       = null;
+  let sessionHistory      = []; // [{ name, artist, uri }], newest first, max 10
+  let mySkipVoted         = false;
+  let _lastButtonLabel    = null;
+  let _lastRoomInfoHtml   = null;
 
   // Prevents event echo: applying a remote command triggers local Player events
   // (onplaypause, songchange) that would re-broadcast it. suppressFor() increments
@@ -404,6 +408,9 @@
       let changeSeq = 0;
       socket.on("change_track", async ({ uri, position, contextUri } = {}) => {
         if (!isConnected || !isSpotifyUri(uri)) return;
+        addToHistory(Player.data?.item);
+        mySkipVoted = false;
+        updateSkipVoteUI(0, 1, false);
         if (position != null && !isSafeNum(position, 0, MAX_POSITION_MS)) return;
         const safePos = position ?? 0;
         const seq = ++changeSeq;
@@ -490,6 +497,31 @@
         }
       });
 
+      socket.on("reaction", ({ emoji, username: uname } = {}) => {
+        if (typeof emoji !== "string") return;
+        showReactionFloat(emoji);
+      });
+
+      socket.on("vote_count", ({ count, total, needed } = {}) => {
+        if (!isSafeNum(count, 0) || !isSafeNum(needed, 1)) return;
+        updateSkipVoteUI(count, needed, mySkipVoted);
+      });
+
+      socket.on("skip_threshold_reached", async () => {
+        if (role !== "host" || !isConnected) return;
+        suppressFor(2000);
+        try {
+          await Spicetify.Player.next?.();
+        } catch (_) {
+          try { await Spicetify.Platform.PlayerAPI?.skipToNext?.(); } catch (_) {}
+        }
+      });
+
+      socket.on("skip_votes_cleared", () => {
+        mySkipVoted = false;
+        updateSkipVoteUI(0, 1, false);
+      });
+
       socket.on("sync_ping", ({ uri, position, isPlaying, sentAt } = {}) => {
         if (role !== "guest" || !isConnected || waitingForHost) return;
         if (!isSpotifyUri(uri) || !isSafeNum(position, 0, MAX_POSITION_MS) || !isSafeNum(sentAt, 0)) return;
@@ -537,6 +569,7 @@
 
   function onSongChange() {
     resetSeekBaseline();
+    addToHistory(Player.data?.item);
     if (!isController() || suppressCount > 0 || !socket?.connected) return;
     const state = Player.data;
     if (!state?.item?.uri) return;
@@ -724,6 +757,53 @@
   }
 
   // --------------------------------------------------------------------------
+  // Session history
+  // --------------------------------------------------------------------------
+  function addToHistory(item) {
+    if (!item?.uri || !item.name) return;
+    if (sessionHistory.length && sessionHistory[0].uri === item.uri) return;
+    sessionHistory.unshift({
+      name:   item.name,
+      artist: item.artists?.[0]?.name || item.artist_name || "",
+      uri:    item.uri,
+    });
+    if (sessionHistory.length > 10) sessionHistory.pop();
+    updateHistoryUI();
+  }
+
+  function updateHistoryUI() {
+    const el = document.getElementById("sync-history-list");
+    if (!el) return;
+    if (!sessionHistory.length) { el.innerHTML = ""; return; }
+    el.innerHTML = sessionHistory.slice(0, 5).map((tr) =>
+      `<div style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--spice-subtext,#a7a7a7)">` +
+      `<span style="color:var(--spice-text,#fff)">${escHtml(tr.name)}</span>` +
+      (tr.artist ? ` · ${escHtml(tr.artist)}` : "") +
+      `</div>`
+    ).join("");
+  }
+
+  function showReactionFloat(emoji) {
+    const ref = document.getElementById("sync-toggle-btn") || document.body;
+    const rect = ref.getBoundingClientRect();
+    const el = document.createElement("div");
+    el.textContent = emoji;
+    const x = rect.left + rect.width / 2 - 14 + (Math.random() * 60 - 30);
+    const y = rect.top > 80 ? rect.top - 10 : rect.bottom + 10;
+    el.style.cssText = `position:fixed;left:${x}px;top:${y}px;font-size:28px;` +
+      `pointer-events:none;z-index:99999;animation:syncReactionFloat 2s ease-out forwards`;
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 2100);
+  }
+
+  function updateSkipVoteUI(count, needed, voted) {
+    const btn = document.getElementById("sync-skip-btn");
+    const lbl = document.getElementById("sync-skip-count");
+    if (btn) { btn.disabled = !!voted; btn.style.opacity = voted ? "0.5" : "1"; }
+    if (lbl) lbl.textContent = count > 0 ? `${count}/${needed}` : "";
+  }
+
+  // --------------------------------------------------------------------------
   // Panel UI helpers
   // --------------------------------------------------------------------------
   function getPanel() { return document.getElementById("sync-panel"); }
@@ -742,6 +822,10 @@
     disc.textContent   = t("disconnect");
     const indR = qs(p, "#sync-indicator");
     if (indR) indR.style.display = "none";
+    ["#sync-history-section","#sync-reactions-row","#sync-skip-row"].forEach(sel => {
+      const el = qs(p, sel); if (el) el.style.display = "none";
+    });
+    mySkipVoted = false;
   }
 
   function setConnectedPanelUI(r) {
@@ -759,6 +843,12 @@
     qs(p, "#sync-guest-cohost-note").style.display = "none";
     const ind = qs(p, "#sync-indicator");
     if (ind) ind.style.display = r === "host" ? "none" : (lastSyncDrift !== null ? "block" : "none");
+    const hist = qs(p, "#sync-history-section");
+    if (hist) { hist.style.display = "flex"; updateHistoryUI(); }
+    const reac = qs(p, "#sync-reactions-row");
+    if (reac) reac.style.display = "flex";
+    const skipRow = qs(p, "#sync-skip-row");
+    if (skipRow) skipRow.style.display = r === "guest" && !cohostMode ? "flex" : "none";
     const hcs = qs(p, "#sync-host-code-section");
     if (r === "host" && roomCode) {
       const codeEl = qs(p, "#sync-host-room-code");
@@ -802,6 +892,9 @@
     qs(p, "#sync-room-info").style.display         = "none";
     const ind = qs(p, "#sync-indicator");
     if (ind) ind.style.display = "none";
+    ["#sync-history-section","#sync-reactions-row","#sync-skip-row"].forEach(sel => {
+      const el = qs(p, sel); if (el) el.style.display = "none";
+    });
   }
 
   function updateRoomInfo(hosts, guests) {
@@ -811,7 +904,7 @@
     ri.style.display = "flex";
     const h = escHtml(hosts);
     const g = escHtml(guests);
-    ri.innerHTML =
+    const newHtml =
       `<span style="color:var(--spice-button,#1db954)">${h} host${hosts !== 1 ? "s" : ""}</span>` +
       `<span style="color:rgba(255,255,255,0.2);margin:0 6px">·</span>` +
       `<span style="color:#1e90ff">${g} guest${guests !== 1 ? "s" : ""}</span>` +
@@ -819,6 +912,7 @@
         ? `<span style="color:rgba(255,255,255,0.2);margin:0 6px">·</span>` +
           `<span style="color:var(--spice-button,#1db954);font-weight:700">co-host on</span>`
         : "");
+    if (newHtml !== _lastRoomInfoHtml) { _lastRoomInfoHtml = newHtml; ri.innerHTML = newHtml; }
   }
 
   function updateCohostSection() {
@@ -883,6 +977,8 @@
     } else {
       label = t("appName");
     }
+    if (label === _lastButtonLabel) { updateToolbarCode(); updateToolbarGuestCount(guestCount); return; }
+    _lastButtonLabel = label;
     btn.style.color = color;
     if (svgEl) {
       svgEl.style.fill   = color;
@@ -912,6 +1008,17 @@
         to   { opacity: 0; transform: translateY(6px) scale(0.98); }
       }
       #sync-panel { animation: syncPopIn 0.18s cubic-bezier(0.4,0,0.2,1) forwards; }
+      @keyframes syncReactionFloat {
+        0%   { transform: translateY(0)     scale(1);   opacity: 1; }
+        100% { transform: translateY(-130px) scale(1.5); opacity: 0; }
+      }
+      .sync-reaction-btn {
+        background: none; border: none; cursor: pointer; font-size: 20px;
+        padding: 2px 4px; border-radius: 6px; transition: transform 0.1s;
+        line-height: 1;
+      }
+      .sync-reaction-btn:hover { transform: scale(1.25); }
+      .sync-reaction-btn:active { transform: scale(0.9); }
 
       #sync-toggle-btn { cursor: default !important; }
       #sync-toggle-btn:hover { cursor: default !important; }
@@ -1160,6 +1267,29 @@
     </div>
   </div>
   <div id="sync-room-info" style="display:none;align-items:center;justify-content:center;flex-wrap:wrap;gap:4px;font-size:11px;color:var(--spice-subtext,#a7a7a7)"></div>
+
+  <div id="sync-history-section" style="display:none;flex-direction:column;gap:4px">
+    <div style="font-size:9px;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:var(--spice-subtext,#a7a7a7)">Played this session</div>
+    <div id="sync-history-list" style="display:flex;flex-direction:column;gap:3px"></div>
+  </div>
+
+  <div id="sync-reactions-row" style="display:none;flex-direction:column;gap:6px">
+    <div style="font-size:9px;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:var(--spice-subtext,#a7a7a7)">Reactions</div>
+    <div style="display:flex;gap:4px;justify-content:space-between">
+      <button class="sync-reaction-btn" data-emoji="❤️">❤️</button>
+      <button class="sync-reaction-btn" data-emoji="🔥">🔥</button>
+      <button class="sync-reaction-btn" data-emoji="😂">😂</button>
+      <button class="sync-reaction-btn" data-emoji="😢">😢</button>
+      <button class="sync-reaction-btn" data-emoji="🎉">🎉</button>
+      <button class="sync-reaction-btn" data-emoji="👏">👏</button>
+    </div>
+  </div>
+
+  <div id="sync-skip-row" style="display:none;align-items:center;gap:8px">
+    <button id="sync-skip-btn" style="flex:1;padding:7px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:50px;color:var(--spice-text,#fff);font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;transition:opacity 0.15s">🗳 Vote to skip</button>
+    <span id="sync-skip-count" style="font-size:11px;color:var(--spice-subtext,#a7a7a7);min-width:30px;text-align:right"></span>
+  </div>
+
   <div id="sync-cohost-row" style="display:none;${SROW}">
     <div style="flex:1;min-width:0;margin-right:10px">
       <div style="font-size:12px;font-weight:600;margin-bottom:2px">${t("cohostLabel")}</div>
@@ -1309,6 +1439,23 @@
       saveInputs("guest"); connect("guest");
     });
     qs(panel, "#sync-disconnect-btn").addEventListener("click", () => { disconnect(); resetPanelUI(); });
+
+    panel.querySelectorAll(".sync-reaction-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        if (!socket?.connected) return;
+        socket.emit("reaction", { emoji: btn.dataset.emoji });
+      });
+    });
+
+    const skipBtn = qs(panel, "#sync-skip-btn");
+    if (skipBtn) {
+      skipBtn.addEventListener("click", () => {
+        if (mySkipVoted || !socket?.connected || role !== "guest") return;
+        mySkipVoted = true;
+        socket.emit("vote_skip");
+        updateSkipVoteUI(1, Math.ceil(guestCount / 2) || 1, true);
+      });
+    }
     copyBtn.addEventListener("click", () => {
       if (!roomCode) return;
       navigator.clipboard.writeText(roomCode).then(() => showNotification(t("codeCopied"))).catch(() => {});
@@ -1378,6 +1525,8 @@
         qs(panel, "#sync-cohost-toggle").checked = cohostMode;
         if (role === "guest" && cohostMode) qs(panel, "#sync-guest-cohost-note").style.display = "block";
         if (role === "guest" && lastSyncDrift !== null) updateSyncIndicator(lastSyncDrift, lastSyncDrift !== Infinity);
+        updateHistoryUI();
+        updateSkipVoteUI(0, 1, mySkipVoted);
       }
     } else if (reconnecting) {
       setReconnectingPanelUI();
