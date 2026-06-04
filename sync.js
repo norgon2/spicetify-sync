@@ -44,6 +44,7 @@
   let spotifyDisplayName  = null;       // real account name from UserAPI (admin gate)
   let adminToken          = null;       // session-only, never persisted
   let adminRefreshTimer   = null;
+  let adminTopbarBtn      = null;       // Spicetify.Topbar.Button instance
   const ADMIN_USERNAME    = "Norgon";
 
   // Prevents event echo: applying a remote command triggers local Player events
@@ -259,9 +260,21 @@
   function startAdminRefresh() { stopAdminRefresh(); fetchAdminData(); adminRefreshTimer = setInterval(fetchAdminData, 6000); }
   function stopAdminRefresh()  { clearInterval(adminRefreshTimer); adminRefreshTimer = null; }
 
+  // Admin button lives in the Spicetify topbar (top of the screen).
+  // Created only when the Spotify account is ADMIN_USERNAME — strict gate.
   function maybeRevealAdminButton() {
-    const btn = document.getElementById("sync-admin-btn");
-    if (btn) btn.style.display = (spotifyDisplayName === ADMIN_USERNAME) ? "flex" : "none";
+    if (spotifyDisplayName !== ADMIN_USERNAME) return;
+    if (adminTopbarBtn) return;                 // already created
+    if (!window.Spicetify?.Topbar?.Button) return;
+    const shieldSvg =
+      '<svg role="img" height="16" width="16" viewBox="0 0 16 16" fill="currentColor">' +
+      '<path d="M8 1 2 3.2v4.3c0 4 3.4 6.4 6 7.3 2.6-.9 6-3.3 6-7.3V3.2L8 1z"/></svg>';
+    adminTopbarBtn = new window.Spicetify.Topbar.Button(
+      "Spicetify Sync Admin",
+      shieldSvg,
+      () => { if (!getPanel()) buildPanel(); openAdminPane(); },
+      false
+    );
   }
 
   function openAdminPane() {
@@ -1914,60 +1927,13 @@
       document.querySelector("[class*='extraControls']") ||
       document.querySelector(".player-controls__right");
 
-    // Admin toolbar icon — hidden until the Spotify account is ADMIN_USERNAME.
-    const adminBtn = document.createElement("button");
-    adminBtn.id = "sync-admin-btn";
-    adminBtn.setAttribute("aria-label", "Admin Dashboard");
-    adminBtn.setAttribute("data-tooltip", "Admin Dashboard");
-    // IMPORTANT: copy classes from native button — do not change this mechanism
-    if (nativeBtn && nativeBtn.className) {
-      adminBtn.className = nativeBtn.className;
-    } else {
-      adminBtn.style.cssText = "background:none;border:none;padding:4px 8px;border-radius:4px";
-    }
-    adminBtn.style.cursor         = "pointer";
-    adminBtn.style.display         = "none";  // revealed by maybeRevealAdminButton()
-    adminBtn.style.alignItems     = "center";
-    adminBtn.style.justifyContent = "center";
-    adminBtn.style.position       = "relative";
-    adminBtn.style.color          = "var(--spice-button, #1db954)";
-
-    const adminSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    adminSvg.setAttribute("width", "20");
-    adminSvg.setAttribute("height", "20");
-    adminSvg.setAttribute("viewBox", "0 0 24 24");
-    adminSvg.setAttribute("fill", "none");
-    adminSvg.setAttribute("stroke", "currentColor");
-    adminSvg.setAttribute("stroke-width", "2");
-    adminSvg.setAttribute("stroke-linecap", "round");
-    adminSvg.setAttribute("stroke-linejoin", "round");
-    // shield icon
-    adminSvg.innerHTML = '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>';
-    adminBtn.appendChild(adminSvg);
-
-    const adminTip = document.createElement("div");
-    adminTip.className = "sync-btn-tooltip";
-    adminTip.textContent = "Admin Dashboard";
-    adminBtn.appendChild(adminTip);
-    adminBtn.addEventListener("mouseenter", () => adminTip.classList.add("sync-btn-tooltip--visible"));
-    adminBtn.addEventListener("mouseleave", () => adminTip.classList.remove("sync-btn-tooltip--visible"));
-    adminBtn.addEventListener("click", () => {
-      if (!getPanel()) buildPanel();
-      openAdminPane();
-    });
-
     if (bar) {
       bar.prepend(btn);
-      btn.insertAdjacentElement("afterend", adminBtn);
     } else {
       btn.style.cssText +=
         ";position:fixed;bottom:20px;right:20px;z-index:9998;" +
         "background:var(--spice-sidebar,#1a1a1a);border-radius:50%;width:36px;height:36px";
       document.body.appendChild(btn);
-      adminBtn.style.cssText +=
-        ";position:fixed;bottom:20px;right:62px;z-index:9998;" +
-        "background:var(--spice-sidebar,#1a1a1a);border-radius:50%;width:36px;height:36px";
-      document.body.appendChild(adminBtn);
     }
 
     maybeRevealAdminButton();
