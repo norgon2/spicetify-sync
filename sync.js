@@ -1400,7 +1400,10 @@
   <div id="sync-inputs-section" style="display:flex;flex-direction:column;gap:10px">
     <div>
       <span style="${LBL}">${t("server")}</span>
-      <input id="sync-ip" type="text" placeholder="${t("serverPh")}" style="${INP}"/>
+      <div style="display:flex;gap:6px;align-items:center">
+        <input id="sync-ip" type="text" style="${INP};flex:1;color:var(--spice-subtext,#a7a7a7);cursor:default" readonly/>
+        <button id="sync-ip-edit" style="padding:4px 10px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:6px;color:var(--spice-subtext,#a7a7a7);font-size:10px;font-weight:700;cursor:pointer;font-family:inherit;flex-shrink:0;transition:opacity 0.15s;white-space:nowrap">Edit</button>
+      </div>
     </div>
     <div>
       <span style="${LBL}">${t("username")}</span>
@@ -1527,9 +1530,23 @@
       el.addEventListener("focus", () => { el.style.borderColor = "rgba(255,255,255,0.25)"; });
       el.addEventListener("blur",  () => { el.style.borderColor = "rgba(255,255,255,0.08)"; });
     }
-    addInputFocus("sync-ip");
     addInputFocus("sync-username");
     addInputFocus("sync-room-code");
+
+    const ipInput = qs(panel, "#sync-ip");
+    const ipEditBtn = qs(panel, "#sync-ip-edit");
+    ipEditBtn.addEventListener("mouseover", () => { ipEditBtn.style.opacity = "0.7"; });
+    ipEditBtn.addEventListener("mouseout",  () => { ipEditBtn.style.opacity = "1"; });
+    ipEditBtn.addEventListener("click", () => {
+      ipInput.removeAttribute("readonly");
+      ipInput.style.color  = "var(--spice-text,#fff)";
+      ipInput.style.cursor = "";
+      ipInput.addEventListener("focus", () => { ipInput.style.borderColor = "rgba(255,255,255,0.25)"; });
+      ipInput.addEventListener("blur",  () => { ipInput.style.borderColor = "rgba(255,255,255,0.08)"; });
+      ipEditBtn.style.display = "none";
+      ipInput.focus();
+      ipInput.select();
+    });
 
     const roomCodeInput = qs(panel, "#sync-room-code");
     roomCodeInput.addEventListener("input", () => {
