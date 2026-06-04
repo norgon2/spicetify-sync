@@ -537,6 +537,7 @@
         role = "host";
         cohostMode = false;
         waitingForHost = false;
+        resetSeekBaseline();
         showNotification("You are now the host!", false);
         startSyncCheck();
         setConnectedPanelUI("host");
@@ -1784,24 +1785,22 @@
     try {
       // Method 1 (official): Platform.UserAPI.getUser() -> displayName
       const user = await Spicetify.Platform.UserAPI.getUser();
-      console.error("[Sync] UserAPI.getUser() =", JSON.stringify(user));
       const name = user?.displayName;
       if (name && typeof name === "string" && name.trim()) {
         username = name.trim().slice(0, 32);
         localStorage.setItem("sync_username", username);
         return;
       }
-    } catch (e) { console.error("[Sync] UserAPI.getUser() threw:", e); }
+    } catch (_) {}
     try {
       // Method 2 (fallback): Spotify Web API via CosmosAsync (auth injected automatically)
       const me = await Spicetify.CosmosAsync.get("https://api.spotify.com/v1/me");
-      console.error("[Sync] CosmosAsync /v1/me =", JSON.stringify(me));
       const name = me?.display_name;
       if (name && typeof name === "string" && name.trim()) {
         username = name.trim().slice(0, 32);
         localStorage.setItem("sync_username", username);
       }
-    } catch (e) { console.error("[Sync] CosmosAsync /v1/me threw:", e); }
+    } catch (_) {}
   }
 
   // --------------------------------------------------------------------------
