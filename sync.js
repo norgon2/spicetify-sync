@@ -272,22 +272,91 @@
     adminTopbarBtn = new window.Spicetify.Topbar.Button(
       "Spicetify Sync Admin",
       shieldSvg,
-      () => { if (!getPanel()) buildPanel(); openAdminPane(); },
+      () => { const p = getAdminPanel(); if (p) closeAdminPanel(); else buildAdminPanel(); },
       false
     );
   }
 
-  function openAdminPane() {
-    const p = getPanel(); if (!p) return;
-    qs(p, "#sync-main-content").style.display = "none";
-    const sc = qs(p, "#sync-settings-content"); if (sc) sc.style.display = "none";
-    qs(p, "#sync-admin-content").style.display = "flex";
+  // Standalone admin window — independent of the main Sync panel.
+  function getAdminPanel() { return document.getElementById("sync-admin-panel"); }
+
+  function closeAdminPanel() {
+    stopAdminRefresh();
+    const p = getAdminPanel();
+    if (p) p.remove();
+  }
+
+  function buildAdminPanel() {
+    if (getAdminPanel()) return;
+    injectStyles();
+    const panel = document.createElement("div");
+    panel.id = "sync-admin-panel";
+    panel.style.cssText = [
+      "position:fixed", "top:56px", "left:50%", "transform:translateX(-50%)",
+      "width:340px", "max-height:72vh", "overflow-y:auto", "z-index:9999",
+      "background:var(--spice-card,#282828)", "border-radius:12px",
+      "border:1px solid rgba(255,255,255,0.08)",
+      "box-shadow:0 8px 32px rgba(0,0,0,0.6),0 2px 8px rgba(0,0,0,0.25)",
+      "display:flex", "flex-direction:column",
+      "font-family:var(--font-family,CircularSp,-apple-system,sans-serif)",
+      "color:var(--spice-text,#ffffff)", "font-size:13px",
+      "animation:syncPopIn 0.18s cubic-bezier(0.4,0,0.2,1) forwards",
+    ].join(";");
+
+    const INP = [
+      "width:100%", "box-sizing:border-box", "padding:8px 10px",
+      "background:var(--spice-main,rgba(0,0,0,0.25))",
+      "border:1px solid rgba(255,255,255,0.08)", "border-radius:6px",
+      "color:var(--spice-text,#fff)", "font-size:12px",
+      "outline:none", "font-family:inherit",
+    ].join(";");
+    const LBL = [
+      "font-size:10px", "font-weight:700", "letter-spacing:0.08em",
+      "text-transform:uppercase", "color:var(--spice-subtext,#a7a7a7)",
+      "margin-bottom:5px", "display:block",
+    ].join(";");
+
+    panel.innerHTML = `
+<div style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px 10px;border-bottom:1px solid rgba(255,255,255,0.06);flex-shrink:0;position:sticky;top:0;background:var(--spice-card,#282828);z-index:1">
+  <div style="display:flex;align-items:center;gap:8px">
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="var(--spice-button,#1db954)"><path d="M8 1 2 3.2v4.3c0 4 3.4 6.4 6 7.3 2.6-.9 6-3.3 6-7.3V3.2L8 1z"/></svg>
+    <span style="font-size:13px;font-weight:700;letter-spacing:-0.01em">Admin Dashboard</span>
+  </div>
+  <button id="sync-admin-close" style="background:none;border:none;cursor:pointer;color:var(--spice-subtext,#a7a7a7);display:flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;padding:0">
+    <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="1" y1="1" x2="11" y2="11"/><line x1="11" y1="1" x2="1" y2="11"/></svg>
+  </button>
+</div>
+<div style="padding:14px;display:flex;flex-direction:column;gap:12px">
+  <div id="sync-admin-auth" style="display:flex;flex-direction:column;gap:8px">
+    <span style="${LBL}">Admin token</span>
+    <input id="sync-admin-token" type="password" placeholder="Enter admin token" style="${INP}" autocomplete="off"/>
+    <button id="sync-admin-auth-btn" style="width:100%;padding:9px;background:var(--spice-button,#1db954);border:none;border-radius:50px;color:var(--spice-button-text,#000);font-weight:700;cursor:pointer;font-size:12px;font-family:inherit">Authenticate</button>
+  </div>
+  <div id="sync-admin-data" style="display:none"></div>
+</div>`;
+
+    document.body.appendChild(panel);
+
+    panel.querySelector("#sync-admin-close").addEventListener("click", closeAdminPanel);
+    panel.querySelector("#sync-admin-auth-btn").addEventListener("click", () => {
+      const tokenInput = panel.querySelector("#sync-admin-token");
+      const v = tokenInput.value.trim();
+      if (!v) return;
+      adminToken = v;
+      tokenInput.value = "";
+      showAdminAuth(false);
+      startAdminRefresh();
+    });
+    panel.querySelector("#sync-admin-token").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") panel.querySelector("#sync-admin-auth-btn").click();
+    });
+
     if (adminToken) { showAdminAuth(false); startAdminRefresh(); }
     else            showAdminAuth(true);
   }
 
   function showAdminAuth(needAuth) {
-    const p = getPanel(); if (!p) return;
+    const p = getAdminPanel(); if (!p) return;
     const auth = p.querySelector("#sync-admin-auth");
     const data = p.querySelector("#sync-admin-data");
     if (auth) auth.style.display = needAuth ? "flex" : "none";
@@ -1444,7 +1513,6 @@
   // --------------------------------------------------------------------------
   function closePanel() {
     const p = getPanel(); if (!p) return;
-    stopAdminRefresh();
     p.style.animation = "syncPopOut 0.16s cubic-bezier(0.4,0,0.2,1) forwards";
     p.addEventListener("animationend", () => p.remove(), { once: true });
   }
@@ -1654,17 +1722,7 @@
   </div>
 </div>
 
-<div id="sync-admin-content" style="display:none;padding:14px;flex-direction:column;gap:12px">
-  <button id="sync-admin-back" style="width:100%;padding:9px 12px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:var(--spice-text,#fff);font-weight:600;cursor:pointer;font-size:12px;font-family:inherit;text-align:left;transition:opacity 0.15s">${t("back")}</button>
-
-  <div id="sync-admin-auth" style="display:flex;flex-direction:column;gap:8px">
-    <span style="${LBL}">Admin token</span>
-    <input id="sync-admin-token" type="password" placeholder="Enter admin token" style="${INP}" autocomplete="off"/>
-    <button id="sync-admin-auth-btn" style="${BTN_PRI};flex:none;width:100%">Authenticate</button>
-  </div>
-
-  <div id="sync-admin-data" style="display:none"></div>
-</div>`;
+`;
 
     document.body.appendChild(panel);
     qs(panel, "#sync-cohost-row").style.display = "none";
@@ -1790,21 +1848,6 @@
       qs(panel, "#sync-main-content").style.display     = "flex";
     });
 
-    qs(panel, "#sync-admin-back").addEventListener("click", () => {
-      stopAdminRefresh();
-      qs(panel, "#sync-admin-content").style.display = "none";
-      qs(panel, "#sync-main-content").style.display  = "flex";
-    });
-    qs(panel, "#sync-admin-auth-btn").addEventListener("click", () => {
-      const tokenInput = qs(panel, "#sync-admin-token");
-      const v = tokenInput.value.trim();
-      if (!v) return;
-      adminToken = v;
-      tokenInput.value = "";
-      showAdminAuth(false);
-      startAdminRefresh();
-    });
-
     qs(panel, "#sync-cohost-toggle").addEventListener("change", (e) => {
       if (role !== "host" || !socket?.connected) { e.target.checked = cohostMode; return; }
       socket.emit("set_cohost_mode", { enabled: e.target.checked });
@@ -1818,7 +1861,6 @@
     langEl.value = settings.lang;
     langEl.addEventListener("change", (e) => {
       saveSetting("lang", e.target.value);
-      stopAdminRefresh();
       panel.remove();
       buildPanel();
       const np = getPanel();
