@@ -44,7 +44,10 @@
   let spotifyDisplayName  = null;       // real account name from UserAPI (admin gate)
   let adminToken          = null;       // session-only, never persisted
   let adminRefreshTimer   = null;
+  let adminDurTimer       = null;       // 1s ticker for connected-duration labels
   let adminTopbarBtn      = null;       // Spicetify.Topbar.Button instance
+  let adminCache          = { data: null, at: 0 };  // 5s cache for instant reopen
+  const trackNameCache    = new Map();  // uri -> "Track — Artist" | null
   const ADMIN_USERNAME    = "Norgon";
 
   // Prevents event echo: applying a remote command triggers local Player events
@@ -216,7 +219,7 @@
   // --------------------------------------------------------------------------
   // Admin dashboard (gated to the Spotify account named ADMIN_USERNAME).
   // The username gate is cosmetic — the real protection is the server token.
-  // Token is typed in the panel, hashed (SHA-256) and sent as x-admin-token;
+  // Token is typed in the modal, hashed (SHA-256) and sent as x-admin-token;
   // it is never persisted to localStorage.
   // --------------------------------------------------------------------------
   async function sha256Hex(str) {
@@ -224,47 +227,98 @@
     return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
   }
 
-  async function fetchAdminData() {
+  async function adminFetch(path, opts) {
+    const hash = await sha256Hex(adminToken);
+    return fetch(`${buildServerURL()}${path}`, {
+      ...opts,
+      headers: { "x-admin-token": hash, ...(opts && opts.headers) },
+    });
+  }
+
+  function setAdminSpinner(on) {
+    const sp = document.getElementById("sync-admin-spinner");
+    if (sp) sp.style.display = on ? "flex" : "none";
+  }
+
+  async function fetchAdminData(withSpinner) {
     if (!adminToken) return;
+    if (withSpinner) setAdminSpinner(true);
     try {
-      const hash = await sha256Hex(adminToken);
-      const res = await fetch(`${buildServerURL()}/admin`, { headers: { "x-admin-token": hash } });
-      if (res.status === 429) return;              // polled too fast — skip this tick
+      const res = await adminFetch("/admin");
+      if (res.status === 429) { setAdminSpinner(false); return; }   // polled too fast
       if (res.status === 401) {
         showNotification("Admin: invalid token.", true);
-        adminToken = null;
-        stopAdminRefresh();
-        showAdminAuth(true);
-        return;
+        adminToken = null; stopAdminRefresh(); showAdminAuth(true); return;
       }
-      if (res.status === 503) { showNotification("Admin: disabled on server (no ADMIN_TOKEN).", true); stopAdminRefresh(); return; }
-      if (!res.ok) return;
-      renderAdminData(await res.json());
-    } catch (_) { /* network error — next tick retries */ }
+      if (res.status === 503) {
+        showNotification("Admin: disabled on server (no ADMIN_TOKEN).", true);
+        stopAdminRefresh(); setAdminSpinner(false); return;
+      }
+      if (!res.ok) { setAdminSpinner(false); return; }
+      const data = await res.json();
+      adminCache = { data, at: Date.now() };
+      renderAdminData(data);
+    } catch (_) { setAdminSpinner(false); }
   }
 
-  async function kickRoom(code) {
-    if (!adminToken || !/^[A-Z0-9]{6}$/i.test(code)) return;
+  async function adminAction(path, body, okMsg) {
+    if (!adminToken) return;
     try {
-      const hash = await sha256Hex(adminToken);
-      const res = await fetch(`${buildServerURL()}/admin/kick`, {
-        method:  "POST",
-        headers: { "x-admin-token": hash, "content-type": "application/json" },
-        body:    JSON.stringify({ code }),
+      const res = await adminFetch(path, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
       });
-      if (res.ok) { showNotification(`Room ${code} kicked.`); fetchAdminData(); }
-      else        showNotification("Kick failed.", true);
-    } catch (_) { showNotification("Kick failed.", true); }
+      if (res.ok) { if (okMsg) showNotification(okMsg); fetchAdminData(false); }
+      else showNotification("Action failed.", true);
+    } catch (_) { showNotification("Action failed.", true); }
+  }
+  function kickRoom(code)        { if (/^[A-Z0-9]{6}$/i.test(code)) adminAction("/admin/kick", { code }, `Room ${code} kicked.`); }
+  function kickParticipant(id)   { if (id) adminAction("/admin/kick-participant", { id }, "Participant kicked."); }
+  function adminBroadcast(text)  { const t2 = String(text).trim(); if (t2) adminAction("/admin/broadcast", { text: t2 }, "Message broadcasted."); }
+  function setMaintenance(on)    { adminAction("/admin/maintenance", { enabled: on }, on ? "Maintenance ON." : "Maintenance OFF."); }
+
+  function startAdminRefresh() {
+    stopAdminRefresh();
+    const fresh = adminCache.data && (Date.now() - adminCache.at < 5000);
+    if (fresh) renderAdminData(adminCache.data);    // instant reopen, no spinner
+    fetchAdminData(!fresh);
+    adminRefreshTimer = setInterval(() => fetchAdminData(false), 6000);
+    adminDurTimer     = setInterval(updateParticipantDurations, 1000);
+  }
+  function stopAdminRefresh() {
+    clearInterval(adminRefreshTimer); adminRefreshTimer = null;
+    clearInterval(adminDurTimer);     adminDurTimer     = null;
   }
 
-  function startAdminRefresh() { stopAdminRefresh(); fetchAdminData(); adminRefreshTimer = setInterval(fetchAdminData, 6000); }
-  function stopAdminRefresh()  { clearInterval(adminRefreshTimer); adminRefreshTimer = null; }
+  // Resolve spotify:track URIs to "Name — Artist" via the Web API (cached).
+  async function resolveTrackName(uri) {
+    if (trackNameCache.has(uri)) return trackNameCache.get(uri);
+    const m = typeof uri === "string" && uri.match(/^spotify:track:([A-Za-z0-9]{22})$/);
+    if (!m) { trackNameCache.set(uri, null); return null; }
+    try {
+      const tr = await Spicetify.CosmosAsync.get(`https://api.spotify.com/v1/tracks/${m[1]}`);
+      const name = tr && tr.name
+        ? tr.name + (tr.artists && tr.artists[0] ? " — " + tr.artists[0].name : "")
+        : null;
+      trackNameCache.set(uri, name);
+      return name;
+    } catch (_) { return null; }
+  }
+
+  function resolveTracksInDom() {
+    const sess = document.getElementById("sync-admin-sessions");
+    if (!sess) return;
+    sess.querySelectorAll(".sync-admin-track[data-uri]").forEach(async (el) => {
+      const uri  = el.dataset.uri;
+      const name = await resolveTrackName(uri);
+      el.textContent = "♪ " + (name || uri.replace("spotify:track:", ""));
+    });
+  }
 
   // Admin button lives in the Spicetify topbar (top of the screen).
   // Created only when the Spotify account is ADMIN_USERNAME — strict gate.
   function maybeRevealAdminButton() {
     if (spotifyDisplayName !== ADMIN_USERNAME) return;
-    if (adminTopbarBtn) return;                 // already created
+    if (adminTopbarBtn) return;
     if (!window.Spicetify?.Topbar?.Button) return;
     const shieldSvg =
       '<svg role="img" height="16" width="16" viewBox="0 0 16 16" fill="currentColor">' +
@@ -277,11 +331,14 @@
     );
   }
 
-  // Standalone admin window — independent of the main Sync panel.
+  // Standalone admin modal (centered, dark overlay) — independent of the Sync panel.
   function getAdminPanel() { return document.getElementById("sync-admin-panel"); }
+
+  function onAdminKeydown(e) { if (e.key === "Escape") closeAdminPanel(); }
 
   function closeAdminPanel() {
     stopAdminRefresh();
+    document.removeEventListener("keydown", onAdminKeydown);
     const p = getAdminPanel();
     if (p) p.remove();
   }
@@ -289,45 +346,43 @@
   function buildAdminPanel() {
     if (getAdminPanel()) return;
     injectStyles();
-    const panel = document.createElement("div");
-    panel.id = "sync-admin-panel";
-    panel.style.cssText = [
-      "position:fixed", "top:56px", "left:50%", "transform:translateX(-50%)",
-      "width:340px", "max-height:72vh", "overflow-y:auto", "z-index:9999",
-      "background:var(--spice-card,#282828)", "border-radius:12px",
-      "border:1px solid rgba(255,255,255,0.08)",
-      "box-shadow:0 8px 32px rgba(0,0,0,0.6),0 2px 8px rgba(0,0,0,0.25)",
-      "display:flex", "flex-direction:column",
+
+    const INP = "width:100%;box-sizing:border-box;padding:8px 10px;background:var(--spice-main,rgba(0,0,0,0.25));border:1px solid rgba(255,255,255,0.08);border-radius:6px;color:var(--spice-text,#fff);font-size:12px;outline:none;font-family:inherit";
+    const LBL = "font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--spice-subtext,#a7a7a7);margin-bottom:5px;display:block";
+
+    const overlay = document.createElement("div");
+    overlay.id = "sync-admin-panel";
+    overlay.style.cssText = [
+      "position:fixed", "inset:0", "z-index:99990",
+      "background:rgba(0,0,0,0.6)", "backdrop-filter:blur(2px)",
+      "display:flex", "align-items:center", "justify-content:center",
+      "animation:syncFadeIn 0.18s ease forwards",
       "font-family:var(--font-family,CircularSp,-apple-system,sans-serif)",
+    ].join(";");
+
+    const modal = document.createElement("div");
+    modal.style.cssText = [
+      "width:600px", "max-width:92vw", "height:500px", "max-height:86vh",
+      "background:var(--spice-card,#282828)", "border-radius:14px",
+      "border:1px solid rgba(255,255,255,0.08)",
+      "box-shadow:0 12px 48px rgba(0,0,0,0.7)",
+      "display:flex", "flex-direction:column", "overflow:hidden",
       "color:var(--spice-text,#ffffff)", "font-size:13px",
-      "animation:syncPopIn 0.18s cubic-bezier(0.4,0,0.2,1) forwards",
+      "animation:syncModalIn 0.2s cubic-bezier(0.4,0,0.2,1) forwards",
     ].join(";");
 
-    const INP = [
-      "width:100%", "box-sizing:border-box", "padding:8px 10px",
-      "background:var(--spice-main,rgba(0,0,0,0.25))",
-      "border:1px solid rgba(255,255,255,0.08)", "border-radius:6px",
-      "color:var(--spice-text,#fff)", "font-size:12px",
-      "outline:none", "font-family:inherit",
-    ].join(";");
-    const LBL = [
-      "font-size:10px", "font-weight:700", "letter-spacing:0.08em",
-      "text-transform:uppercase", "color:var(--spice-subtext,#a7a7a7)",
-      "margin-bottom:5px", "display:block",
-    ].join(";");
-
-    panel.innerHTML = `
-<div style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px 10px;border-bottom:1px solid rgba(255,255,255,0.06);flex-shrink:0;position:sticky;top:0;background:var(--spice-card,#282828);z-index:1">
-  <div style="display:flex;align-items:center;gap:8px">
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="var(--spice-button,#1db954)"><path d="M8 1 2 3.2v4.3c0 4 3.4 6.4 6 7.3 2.6-.9 6-3.3 6-7.3V3.2L8 1z"/></svg>
-    <span style="font-size:13px;font-weight:700;letter-spacing:-0.01em">Admin Dashboard</span>
+    modal.innerHTML = `
+<div style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid rgba(255,255,255,0.06);flex-shrink:0">
+  <div style="display:flex;align-items:center;gap:9px">
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="var(--spice-button,#1db954)"><path d="M8 1 2 3.2v4.3c0 4 3.4 6.4 6 7.3 2.6-.9 6-3.3 6-7.3V3.2L8 1z"/></svg>
+    <span style="font-size:15px;font-weight:800;letter-spacing:-0.01em">Admin Dashboard</span>
   </div>
-  <button id="sync-admin-close" style="background:none;border:none;cursor:pointer;color:var(--spice-subtext,#a7a7a7);display:flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;padding:0">
-    <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="1" y1="1" x2="11" y2="11"/><line x1="11" y1="1" x2="1" y2="11"/></svg>
+  <button id="sync-admin-close" style="background:none;border:none;cursor:pointer;color:var(--spice-subtext,#a7a7a7);display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;padding:0">
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="1" y1="1" x2="11" y2="11"/><line x1="11" y1="1" x2="1" y2="11"/></svg>
   </button>
 </div>
-<div style="padding:14px;display:flex;flex-direction:column;gap:12px">
-  <div id="sync-admin-auth" style="display:flex;flex-direction:column;gap:8px">
+<div style="flex:1;overflow-y:auto;padding:16px">
+  <div id="sync-admin-auth" style="display:flex;flex-direction:column;gap:8px;max-width:320px">
     <span style="${LBL}">Admin token</span>
     <input id="sync-admin-token" type="password" placeholder="Enter admin token" style="${INP}" autocomplete="off"/>
     <button id="sync-admin-auth-btn" style="width:100%;padding:9px;background:var(--spice-button,#1db954);border:none;border-radius:50px;color:var(--spice-button-text,#000);font-weight:700;cursor:pointer;font-size:12px;font-family:inherit">Authenticate</button>
@@ -335,11 +390,14 @@
   <div id="sync-admin-data" style="display:none"></div>
 </div>`;
 
-    document.body.appendChild(panel);
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
 
-    panel.querySelector("#sync-admin-close").addEventListener("click", closeAdminPanel);
-    panel.querySelector("#sync-admin-auth-btn").addEventListener("click", () => {
-      const tokenInput = panel.querySelector("#sync-admin-token");
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) closeAdminPanel(); });
+    document.addEventListener("keydown", onAdminKeydown);
+    modal.querySelector("#sync-admin-close").addEventListener("click", closeAdminPanel);
+    modal.querySelector("#sync-admin-auth-btn").addEventListener("click", () => {
+      const tokenInput = modal.querySelector("#sync-admin-token");
       const v = tokenInput.value.trim();
       if (!v) return;
       adminToken = v;
@@ -347,8 +405,8 @@
       showAdminAuth(false);
       startAdminRefresh();
     });
-    panel.querySelector("#sync-admin-token").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") panel.querySelector("#sync-admin-auth-btn").click();
+    modal.querySelector("#sync-admin-token").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") modal.querySelector("#sync-admin-auth-btn").click();
     });
 
     if (adminToken) { showAdminAuth(false); startAdminRefresh(); }
@@ -360,52 +418,120 @@
     const auth = p.querySelector("#sync-admin-auth");
     const data = p.querySelector("#sync-admin-data");
     if (auth) auth.style.display = needAuth ? "flex" : "none";
-    if (data) data.style.display = needAuth ? "none" : "block";
+    if (data) {
+      data.style.display = needAuth ? "none" : "block";
+      if (!needAuth && !data.dataset.built) buildAdminDataSkeleton(data);
+    }
+  }
+
+  // Static structure built once after auth — keeps the broadcast input & maintenance
+  // button alive (with their listeners) across the 6s data refreshes.
+  function buildAdminDataSkeleton(data) {
+    data.dataset.built = "1";
+    const SECT = "font-size:9px;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:var(--spice-subtext,#a7a7a7);margin:0 0 8px";
+    const INP_INLINE = "box-sizing:border-box;padding:8px 10px;background:var(--spice-main,rgba(0,0,0,0.25));border:1px solid rgba(255,255,255,0.08);border-radius:6px;color:var(--spice-text,#fff);font-size:12px;outline:none;font-family:inherit";
+    data.innerHTML = `
+<div id="sync-admin-spinner" style="display:none;align-items:center;justify-content:center;padding:24px"><div class="sync-spinner"></div></div>
+<div style="${SECT}">Statistics</div>
+<div id="sync-admin-stats" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:18px"></div>
+<div style="${SECT}">Active sessions</div>
+<div id="sync-admin-sessions" style="margin-bottom:18px"></div>
+<div style="${SECT}">Staff actions</div>
+<div style="display:flex;gap:6px;margin-bottom:8px">
+  <input id="sync-admin-bcast" type="text" placeholder="Broadcast message to all sessions…" maxlength="200" style="${INP_INLINE};flex:1"/>
+  <button id="sync-admin-bcast-btn" style="padding:8px 16px;background:var(--spice-button,#1db954);border:none;border-radius:50px;color:var(--spice-button-text,#000);font-weight:700;font-size:11px;cursor:pointer;font-family:inherit;flex-shrink:0">Send</button>
+</div>
+<button id="sync-admin-maint" data-on="0" style="width:100%;padding:9px;border-radius:50px;font-weight:700;cursor:pointer;font-size:12px;font-family:inherit;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.06);color:var(--spice-text,#fff)">Maintenance mode</button>`;
+
+    const bcast = data.querySelector("#sync-admin-bcast");
+    const send  = () => { const v = bcast.value.trim(); if (!v) return; adminBroadcast(v); bcast.value = ""; };
+    data.querySelector("#sync-admin-bcast-btn").addEventListener("click", send);
+    bcast.addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
+    data.querySelector("#sync-admin-maint").addEventListener("click", (e) => {
+      setMaintenance(e.currentTarget.dataset.on !== "1");
+    });
   }
 
   function adminStat(label, val) {
-    return `<div style="flex:1;min-width:58px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:8px;text-align:center">` +
-      `<div style="font-size:18px;font-weight:900;color:var(--spice-button,#1db954)">${escHtml(val ?? 0)}</div>` +
-      `<div style="font-size:9px;color:var(--spice-subtext,#a7a7a7);text-transform:uppercase;letter-spacing:0.06em">${escHtml(label)}</div></div>`;
+    return `<div style="flex:1;min-width:84px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:10px;text-align:center">` +
+      `<div style="font-size:20px;font-weight:900;color:var(--spice-button,#1db954);line-height:1.1">${escHtml(val ?? 0)}</div>` +
+      `<div style="font-size:9px;color:var(--spice-subtext,#a7a7a7);text-transform:uppercase;letter-spacing:0.06em;margin-top:3px">${escHtml(label)}</div></div>`;
+  }
+
+  function fmtUptime(ms) {
+    const s = Math.floor((ms || 0) / 1000);
+    const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+    if (d > 0) return `${d}d ${h}h`;
+    if (h > 0) return `${h}h ${m}m`;
+    return `${m}m`;
+  }
+
+  function adminTrackCell(uri) {
+    if (!uri) return `<span style="font-size:11px;color:var(--spice-subtext,#a7a7a7)">— no track —</span>`;
+    const cached = trackNameCache.get(uri);
+    const shown  = cached === undefined ? "♪ …"
+                 : cached === null      ? "♪ " + uri.replace("spotify:track:", "")
+                                        : "♪ " + cached;
+    const attr   = cached === undefined ? ` data-uri="${escHtml(uri)}"` : "";
+    return `<span class="sync-admin-track"${attr} style="font-size:11px;color:var(--spice-button,#1db954)">${escHtml(shown)}</span>`;
   }
 
   function adminRoomRow(r) {
-    const members = Array.isArray(r.members)
-      ? r.members.map((m) => `${escHtml(m.username)} (${escHtml(m.role)})`).join(", ")
-      : "";
-    return `<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:8px;margin-bottom:6px">` +
-      `<div style="display:flex;align-items:center;justify-content:space-between;gap:6px">` +
-        `<span style="font-family:monospace;font-weight:800;font-size:13px;color:var(--spice-text,#fff)">${escHtml(r.code)}</span>` +
+    const members = (Array.isArray(r.members) ? r.members : []).map((m) => {
+      const roleColor = m.role === "host" ? "var(--spice-button,#1db954)" : m.role === "cohost" ? "#f59b00" : "#1e90ff";
+      const kickBtn = m.role !== "host"
+        ? `<button class="sync-admin-kickp" data-id="${escHtml(m.id)}" title="Kick participant" style="background:none;border:none;color:#e22134;cursor:pointer;font-size:13px;padding:0 2px;line-height:1">✕</button>`
+        : "";
+      return `<div style="display:flex;align-items:center;justify-content:space-between;gap:6px;padding:3px 0">` +
+        `<span style="font-size:11px;color:var(--spice-text,#fff);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px">${escHtml(m.username)}</span>` +
+        `<span style="display:flex;align-items:center;gap:8px;flex-shrink:0">` +
+          `<span style="font-size:10px;color:${roleColor};font-weight:700">${escHtml(m.role)}</span>` +
+          `<span class="sync-dur" data-at="${escHtml(m.connectedAt)}" style="font-size:10px;color:var(--spice-subtext,#a7a7a7);min-width:42px;text-align:right"></span>` +
+          kickBtn +
+        `</span></div>`;
+    }).join("");
+    return `<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:10px;margin-bottom:8px">` +
+      `<div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:6px">` +
+        `<span style="font-family:monospace;font-weight:800;font-size:14px;color:var(--spice-text,#fff);letter-spacing:0.12em">${escHtml(r.code)}</span>` +
         `<button class="sync-admin-kick" data-code="${escHtml(r.code)}" style="padding:3px 10px;background:rgba(226,33,52,0.15);border:1px solid rgba(226,33,52,0.4);border-radius:50px;color:#e22134;font-size:10px;font-weight:700;cursor:pointer;font-family:inherit;flex-shrink:0">Kick room</button>` +
       `</div>` +
-      `<div style="font-size:10px;color:var(--spice-subtext,#a7a7a7);margin-top:4px;line-height:1.4;overflow:hidden;text-overflow:ellipsis">${members || "—"}</div></div>`;
+      `<div style="margin-bottom:6px">${adminTrackCell(r.currentUri)}</div>` +
+      `<div>${members || `<span style="font-size:11px;color:var(--spice-subtext,#a7a7a7)">No members</span>`}</div></div>`;
   }
 
   function renderAdminData(data) {
-    const wrap = document.getElementById("sync-admin-data");
-    if (!wrap || !data) return;
-    const s     = data.stats || {};
+    setAdminSpinner(false);
+    const statsEl = document.getElementById("sync-admin-stats");
+    const sessEl  = document.getElementById("sync-admin-sessions");
+    if (!statsEl || !sessEl || !data) return;
+    const s = data.stats || {};
+
+    statsEl.innerHTML =
+      adminStat("Total conns", s.totalConnections) +
+      adminStat("Peak", s.peakConnections) +
+      adminStat("Rooms today", s.roomsCreatedToday) +
+      adminStat("Uptime", fmtUptime(s.uptimeMs)) +
+      adminStat("Active rooms", s.activeRooms) +
+      adminStat("Online", s.connected);
+
     const rooms = Array.isArray(data.rooms) ? data.rooms : [];
-    const log   = Array.isArray(data.connectionLog) ? data.connectionLog : [];
-    const SECT  = "font-size:9px;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:var(--spice-subtext,#a7a7a7);margin-bottom:4px";
-    let html = `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">` +
-      adminStat("Connected", s.connected) + adminStat("Rooms", s.activeRooms) +
-      adminStat("Total", s.totalConnections) + adminStat("Peak", s.peakConnections) + `</div>`;
-    html += `<div style="${SECT}">Active rooms</div>`;
-    html += rooms.length
+    sessEl.innerHTML = rooms.length
       ? rooms.map(adminRoomRow).join("")
-      : `<div style="font-size:11px;color:var(--spice-subtext,#a7a7a7);margin-bottom:6px">No active rooms</div>`;
-    html += `<div style="${SECT};margin-top:10px">Recent connections</div>`;
-    html += log.length
-      ? log.map((l) =>
-          `<div style="font-size:10px;color:var(--spice-subtext,#a7a7a7);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">` +
-          `<span style="color:var(--spice-text,#fff)">${escHtml(l.username)}</span> · ${escHtml(l.role)} · ${escHtml(l.roomCode)}</div>`
-        ).join("")
-      : `<div style="font-size:11px;color:var(--spice-subtext,#a7a7a7)">No connections yet</div>`;
-    wrap.innerHTML = html;
-    wrap.querySelectorAll(".sync-admin-kick").forEach((btn) => {
-      btn.addEventListener("click", () => kickRoom(btn.dataset.code));
-    });
+      : `<div style="font-size:11px;color:var(--spice-subtext,#a7a7a7)">No active sessions</div>`;
+    sessEl.querySelectorAll(".sync-admin-kick").forEach((b) => b.addEventListener("click", () => kickRoom(b.dataset.code)));
+    sessEl.querySelectorAll(".sync-admin-kickp").forEach((b) => b.addEventListener("click", () => kickParticipant(b.dataset.id)));
+    updateParticipantDurations();
+    resolveTracksInDom();
+
+    const maintBtn = document.getElementById("sync-admin-maint");
+    if (maintBtn) {
+      const on = !!s.maintenance;
+      maintBtn.dataset.on    = on ? "1" : "0";
+      maintBtn.textContent   = on ? "Maintenance ON — click to disable" : "Enable maintenance mode";
+      maintBtn.style.border  = `1px solid ${on ? "rgba(226,33,52,0.5)" : "rgba(255,255,255,0.12)"}`;
+      maintBtn.style.background = on ? "rgba(226,33,52,0.18)" : "rgba(255,255,255,0.06)";
+      maintBtn.style.color   = on ? "#e22134" : "var(--spice-text,#fff)";
+    }
   }
 
   // Host creates the room; server assigns a code via room_created.
@@ -751,6 +877,10 @@
         showNotification("You have been removed from the room.", true);
         disconnect();
         resetPanelUI();
+      });
+
+      socket.on("admin_message", ({ text } = {}) => {
+        if (typeof text === "string" && text.trim()) showNotification(`📢 ${text.trim().slice(0, 200)}`);
       });
 
       socket.on("sync_ping", ({ uri, position, isPlaying, sentAt } = {}) => {
@@ -1384,6 +1514,19 @@
         to   { opacity: 0; transform: translateY(6px) scale(0.98); }
       }
       #sync-panel { animation: syncPopIn 0.18s cubic-bezier(0.4,0,0.2,1) forwards; }
+
+      @keyframes syncFadeIn { from { opacity: 0; } to { opacity: 1; } }
+      @keyframes syncModalIn {
+        from { opacity: 0; transform: translateY(8px) scale(0.97); }
+        to   { opacity: 1; transform: translateY(0)   scale(1);    }
+      }
+      @keyframes syncSpin { to { transform: rotate(360deg); } }
+      .sync-spinner {
+        width: 28px; height: 28px; border-radius: 50%;
+        border: 3px solid rgba(255,255,255,0.15);
+        border-top-color: var(--spice-button, #1db954);
+        animation: syncSpin 0.7s linear infinite;
+      }
 
       #sync-toggle-btn { cursor: default !important; }
       #sync-toggle-btn:hover { cursor: default !important; }
