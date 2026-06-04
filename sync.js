@@ -260,9 +260,17 @@
   function stopAdminRefresh()  { clearInterval(adminRefreshTimer); adminRefreshTimer = null; }
 
   function maybeRevealAdminButton() {
+    const btn = document.getElementById("sync-admin-btn");
+    if (btn) btn.style.display = (spotifyDisplayName === ADMIN_USERNAME) ? "flex" : "none";
+  }
+
+  function openAdminPane() {
     const p = getPanel(); if (!p) return;
-    const btn = p.querySelector("#sync-admin-open");
-    if (btn) btn.style.display = (spotifyDisplayName === ADMIN_USERNAME) ? "block" : "none";
+    qs(p, "#sync-main-content").style.display = "none";
+    const sc = qs(p, "#sync-settings-content"); if (sc) sc.style.display = "none";
+    qs(p, "#sync-admin-content").style.display = "flex";
+    if (adminToken) { showAdminAuth(false); startAdminRefresh(); }
+    else            showAdminAuth(true);
   }
 
   function showAdminAuth(needAuth) {
@@ -1631,8 +1639,6 @@
     <div style="${SDESC};margin-bottom:6px">${t("syncDelayDesc")}</div>
     <input type="range" id="sync-s-delay" class="sync-slider" min="0" max="500" step="10" value="${settings.syncDelay}"/>
   </div>
-
-  <button id="sync-admin-open" style="display:none;width:100%;padding:9px 12px;margin-top:4px;background:rgba(29,185,84,0.08);border:1px solid rgba(29,185,84,0.25);border-radius:8px;color:var(--spice-button,#1db954);font-weight:700;cursor:pointer;font-size:12px;font-family:inherit;text-align:left;transition:opacity 0.15s">🔒 Admin Dashboard</button>
 </div>
 
 <div id="sync-admin-content" style="display:none;padding:14px;flex-direction:column;gap:12px">
@@ -1765,23 +1771,16 @@
     qs(panel, "#sync-settings-btn").addEventListener("click", () => {
       qs(panel, "#sync-main-content").style.display    = "none";
       qs(panel, "#sync-settings-content").style.display = "flex";
-      maybeRevealAdminButton();
     });
     qs(panel, "#sync-settings-back").addEventListener("click", () => {
       qs(panel, "#sync-settings-content").style.display = "none";
       qs(panel, "#sync-main-content").style.display     = "flex";
     });
 
-    qs(panel, "#sync-admin-open").addEventListener("click", () => {
-      qs(panel, "#sync-settings-content").style.display = "none";
-      qs(panel, "#sync-admin-content").style.display    = "flex";
-      if (adminToken) { showAdminAuth(false); startAdminRefresh(); }
-      else            showAdminAuth(true);
-    });
     qs(panel, "#sync-admin-back").addEventListener("click", () => {
       stopAdminRefresh();
-      qs(panel, "#sync-admin-content").style.display    = "none";
-      qs(panel, "#sync-settings-content").style.display = "flex";
+      qs(panel, "#sync-admin-content").style.display = "none";
+      qs(panel, "#sync-main-content").style.display  = "flex";
     });
     qs(panel, "#sync-admin-auth-btn").addEventListener("click", () => {
       const tokenInput = qs(panel, "#sync-admin-token");
@@ -1915,15 +1914,63 @@
       document.querySelector("[class*='extraControls']") ||
       document.querySelector(".player-controls__right");
 
+    // Admin toolbar icon — hidden until the Spotify account is ADMIN_USERNAME.
+    const adminBtn = document.createElement("button");
+    adminBtn.id = "sync-admin-btn";
+    adminBtn.setAttribute("aria-label", "Admin Dashboard");
+    adminBtn.setAttribute("data-tooltip", "Admin Dashboard");
+    // IMPORTANT: copy classes from native button — do not change this mechanism
+    if (nativeBtn && nativeBtn.className) {
+      adminBtn.className = nativeBtn.className;
+    } else {
+      adminBtn.style.cssText = "background:none;border:none;padding:4px 8px;border-radius:4px";
+    }
+    adminBtn.style.cursor         = "pointer";
+    adminBtn.style.display         = "none";  // revealed by maybeRevealAdminButton()
+    adminBtn.style.alignItems     = "center";
+    adminBtn.style.justifyContent = "center";
+    adminBtn.style.position       = "relative";
+    adminBtn.style.color          = "var(--spice-button, #1db954)";
+
+    const adminSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    adminSvg.setAttribute("width", "20");
+    adminSvg.setAttribute("height", "20");
+    adminSvg.setAttribute("viewBox", "0 0 24 24");
+    adminSvg.setAttribute("fill", "none");
+    adminSvg.setAttribute("stroke", "currentColor");
+    adminSvg.setAttribute("stroke-width", "2");
+    adminSvg.setAttribute("stroke-linecap", "round");
+    adminSvg.setAttribute("stroke-linejoin", "round");
+    // shield icon
+    adminSvg.innerHTML = '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>';
+    adminBtn.appendChild(adminSvg);
+
+    const adminTip = document.createElement("div");
+    adminTip.className = "sync-btn-tooltip";
+    adminTip.textContent = "Admin Dashboard";
+    adminBtn.appendChild(adminTip);
+    adminBtn.addEventListener("mouseenter", () => adminTip.classList.add("sync-btn-tooltip--visible"));
+    adminBtn.addEventListener("mouseleave", () => adminTip.classList.remove("sync-btn-tooltip--visible"));
+    adminBtn.addEventListener("click", () => {
+      if (!getPanel()) buildPanel();
+      openAdminPane();
+    });
+
     if (bar) {
       bar.prepend(btn);
+      btn.insertAdjacentElement("afterend", adminBtn);
     } else {
       btn.style.cssText +=
         ";position:fixed;bottom:20px;right:20px;z-index:9998;" +
         "background:var(--spice-sidebar,#1a1a1a);border-radius:50%;width:36px;height:36px";
       document.body.appendChild(btn);
+      adminBtn.style.cssText +=
+        ";position:fixed;bottom:20px;right:62px;z-index:9998;" +
+        "background:var(--spice-sidebar,#1a1a1a);border-radius:50%;width:36px;height:36px";
+      document.body.appendChild(adminBtn);
     }
 
+    maybeRevealAdminButton();
     updateButtonState();
   }
 
