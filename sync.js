@@ -41,6 +41,10 @@
   let _lastRoomInfoHtml   = null;
   let participants        = [];
   let participantsTimer   = null;
+  let spotifyDisplayName  = null;       // real account name from UserAPI (admin gate)
+  let adminToken          = null;       // session-only, never persisted
+  let adminRefreshTimer   = null;
+  const ADMIN_USERNAME    = "Norgon";
 
   // Prevents event echo: applying a remote command triggers local Player events
   // (onplaypause, songchange) that would re-broadcast it. suppressFor() increments
@@ -199,6 +203,121 @@
   // Socket.io bundled inline — no CDN dependency
   function loadSocketIO(callback) { callback(); }
 
+  // Single source of truth for the server base URL (used by connect + admin).
+  function buildServerURL() {
+    const isLocal = serverIP === "localhost" || serverIP === "127.0.0.1";
+    const isIP    = /^[\d.]+$/.test(serverIP);
+    return isLocal ? `http://${serverIP}:3000`
+         : isIP    ? `https://${serverIP}:3000`
+                   : `https://${serverIP}`;
+  }
+
+  // --------------------------------------------------------------------------
+  // Admin dashboard (gated to the Spotify account named ADMIN_USERNAME).
+  // The username gate is cosmetic — the real protection is the server token.
+  // Token is typed in the panel, hashed (SHA-256) and sent as x-admin-token;
+  // it is never persisted to localStorage.
+  // --------------------------------------------------------------------------
+  async function sha256Hex(str) {
+    const buf = await window.crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
+    return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  async function fetchAdminData() {
+    if (!adminToken) return;
+    try {
+      const hash = await sha256Hex(adminToken);
+      const res = await fetch(`${buildServerURL()}/admin`, { headers: { "x-admin-token": hash } });
+      if (res.status === 429) return;              // polled too fast — skip this tick
+      if (res.status === 401) {
+        showNotification("Admin: invalid token.", true);
+        adminToken = null;
+        stopAdminRefresh();
+        showAdminAuth(true);
+        return;
+      }
+      if (res.status === 503) { showNotification("Admin: disabled on server (no ADMIN_TOKEN).", true); stopAdminRefresh(); return; }
+      if (!res.ok) return;
+      renderAdminData(await res.json());
+    } catch (_) { /* network error — next tick retries */ }
+  }
+
+  async function kickRoom(code) {
+    if (!adminToken || !/^[A-Z0-9]{6}$/i.test(code)) return;
+    try {
+      const hash = await sha256Hex(adminToken);
+      const res = await fetch(`${buildServerURL()}/admin/kick`, {
+        method:  "POST",
+        headers: { "x-admin-token": hash, "content-type": "application/json" },
+        body:    JSON.stringify({ code }),
+      });
+      if (res.ok) { showNotification(`Room ${code} kicked.`); fetchAdminData(); }
+      else        showNotification("Kick failed.", true);
+    } catch (_) { showNotification("Kick failed.", true); }
+  }
+
+  function startAdminRefresh() { stopAdminRefresh(); fetchAdminData(); adminRefreshTimer = setInterval(fetchAdminData, 6000); }
+  function stopAdminRefresh()  { clearInterval(adminRefreshTimer); adminRefreshTimer = null; }
+
+  function maybeRevealAdminButton() {
+    const p = getPanel(); if (!p) return;
+    const btn = p.querySelector("#sync-admin-open");
+    if (btn) btn.style.display = (spotifyDisplayName === ADMIN_USERNAME) ? "block" : "none";
+  }
+
+  function showAdminAuth(needAuth) {
+    const p = getPanel(); if (!p) return;
+    const auth = p.querySelector("#sync-admin-auth");
+    const data = p.querySelector("#sync-admin-data");
+    if (auth) auth.style.display = needAuth ? "flex" : "none";
+    if (data) data.style.display = needAuth ? "none" : "block";
+  }
+
+  function adminStat(label, val) {
+    return `<div style="flex:1;min-width:58px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:8px;text-align:center">` +
+      `<div style="font-size:18px;font-weight:900;color:var(--spice-button,#1db954)">${escHtml(val ?? 0)}</div>` +
+      `<div style="font-size:9px;color:var(--spice-subtext,#a7a7a7);text-transform:uppercase;letter-spacing:0.06em">${escHtml(label)}</div></div>`;
+  }
+
+  function adminRoomRow(r) {
+    const members = Array.isArray(r.members)
+      ? r.members.map((m) => `${escHtml(m.username)} (${escHtml(m.role)})`).join(", ")
+      : "";
+    return `<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:8px;margin-bottom:6px">` +
+      `<div style="display:flex;align-items:center;justify-content:space-between;gap:6px">` +
+        `<span style="font-family:monospace;font-weight:800;font-size:13px;color:var(--spice-text,#fff)">${escHtml(r.code)}</span>` +
+        `<button class="sync-admin-kick" data-code="${escHtml(r.code)}" style="padding:3px 10px;background:rgba(226,33,52,0.15);border:1px solid rgba(226,33,52,0.4);border-radius:50px;color:#e22134;font-size:10px;font-weight:700;cursor:pointer;font-family:inherit;flex-shrink:0">Kick room</button>` +
+      `</div>` +
+      `<div style="font-size:10px;color:var(--spice-subtext,#a7a7a7);margin-top:4px;line-height:1.4;overflow:hidden;text-overflow:ellipsis">${members || "—"}</div></div>`;
+  }
+
+  function renderAdminData(data) {
+    const wrap = document.getElementById("sync-admin-data");
+    if (!wrap || !data) return;
+    const s     = data.stats || {};
+    const rooms = Array.isArray(data.rooms) ? data.rooms : [];
+    const log   = Array.isArray(data.connectionLog) ? data.connectionLog : [];
+    const SECT  = "font-size:9px;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:var(--spice-subtext,#a7a7a7);margin-bottom:4px";
+    let html = `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">` +
+      adminStat("Connected", s.connected) + adminStat("Rooms", s.activeRooms) +
+      adminStat("Total", s.totalConnections) + adminStat("Peak", s.peakConnections) + `</div>`;
+    html += `<div style="${SECT}">Active rooms</div>`;
+    html += rooms.length
+      ? rooms.map(adminRoomRow).join("")
+      : `<div style="font-size:11px;color:var(--spice-subtext,#a7a7a7);margin-bottom:6px">No active rooms</div>`;
+    html += `<div style="${SECT};margin-top:10px">Recent connections</div>`;
+    html += log.length
+      ? log.map((l) =>
+          `<div style="font-size:10px;color:var(--spice-subtext,#a7a7a7);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">` +
+          `<span style="color:var(--spice-text,#fff)">${escHtml(l.username)}</span> · ${escHtml(l.role)} · ${escHtml(l.roomCode)}</div>`
+        ).join("")
+      : `<div style="font-size:11px;color:var(--spice-subtext,#a7a7a7)">No connections yet</div>`;
+    wrap.innerHTML = html;
+    wrap.querySelectorAll(".sync-admin-kick").forEach((btn) => {
+      btn.addEventListener("click", () => kickRoom(btn.dataset.code));
+    });
+  }
+
   // Host creates the room; server assigns a code via room_created.
   // Guest joins with the 6-char code. Both roles re-register using the
   // closure-captured selectedRole on every Socket.io auto-reconnect.
@@ -222,13 +341,7 @@
         resetPanelUI();
         return;
       }
-      const isLocal = serverIP === "localhost" || serverIP === "127.0.0.1";
-      const isIP    = /^[\d.]+$/.test(serverIP);
-      const serverURL = isLocal
-        ? `http://${serverIP}:3000`
-        : isIP
-          ? `https://${serverIP}:3000`
-          : `https://${serverIP}`;
+      const serverURL = buildServerURL();
 
       socket = window.io(serverURL, {
         transports: ["websocket"],
@@ -1310,6 +1423,7 @@
   // --------------------------------------------------------------------------
   function closePanel() {
     const p = getPanel(); if (!p) return;
+    stopAdminRefresh();
     p.style.animation = "syncPopOut 0.16s cubic-bezier(0.4,0,0.2,1) forwards";
     p.addEventListener("animationend", () => p.remove(), { once: true });
   }
@@ -1517,6 +1631,20 @@
     <div style="${SDESC};margin-bottom:6px">${t("syncDelayDesc")}</div>
     <input type="range" id="sync-s-delay" class="sync-slider" min="0" max="500" step="10" value="${settings.syncDelay}"/>
   </div>
+
+  <button id="sync-admin-open" style="display:none;width:100%;padding:9px 12px;margin-top:4px;background:rgba(29,185,84,0.08);border:1px solid rgba(29,185,84,0.25);border-radius:8px;color:var(--spice-button,#1db954);font-weight:700;cursor:pointer;font-size:12px;font-family:inherit;text-align:left;transition:opacity 0.15s">🔒 Admin Dashboard</button>
+</div>
+
+<div id="sync-admin-content" style="display:none;padding:14px;flex-direction:column;gap:12px">
+  <button id="sync-admin-back" style="width:100%;padding:9px 12px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:var(--spice-text,#fff);font-weight:600;cursor:pointer;font-size:12px;font-family:inherit;text-align:left;transition:opacity 0.15s">${t("back")}</button>
+
+  <div id="sync-admin-auth" style="display:flex;flex-direction:column;gap:8px">
+    <span style="${LBL}">Admin token</span>
+    <input id="sync-admin-token" type="password" placeholder="Enter admin token" style="${INP}" autocomplete="off"/>
+    <button id="sync-admin-auth-btn" style="${BTN_PRI};flex:none;width:100%">Authenticate</button>
+  </div>
+
+  <div id="sync-admin-data" style="display:none"></div>
 </div>`;
 
     document.body.appendChild(panel);
@@ -1637,10 +1765,32 @@
     qs(panel, "#sync-settings-btn").addEventListener("click", () => {
       qs(panel, "#sync-main-content").style.display    = "none";
       qs(panel, "#sync-settings-content").style.display = "flex";
+      maybeRevealAdminButton();
     });
     qs(panel, "#sync-settings-back").addEventListener("click", () => {
       qs(panel, "#sync-settings-content").style.display = "none";
       qs(panel, "#sync-main-content").style.display     = "flex";
+    });
+
+    qs(panel, "#sync-admin-open").addEventListener("click", () => {
+      qs(panel, "#sync-settings-content").style.display = "none";
+      qs(panel, "#sync-admin-content").style.display    = "flex";
+      if (adminToken) { showAdminAuth(false); startAdminRefresh(); }
+      else            showAdminAuth(true);
+    });
+    qs(panel, "#sync-admin-back").addEventListener("click", () => {
+      stopAdminRefresh();
+      qs(panel, "#sync-admin-content").style.display    = "none";
+      qs(panel, "#sync-settings-content").style.display = "flex";
+    });
+    qs(panel, "#sync-admin-auth-btn").addEventListener("click", () => {
+      const tokenInput = qs(panel, "#sync-admin-token");
+      const v = tokenInput.value.trim();
+      if (!v) return;
+      adminToken = v;
+      tokenInput.value = "";
+      showAdminAuth(false);
+      startAdminRefresh();
     });
 
     qs(panel, "#sync-cohost-toggle").addEventListener("change", (e) => {
@@ -1656,6 +1806,7 @@
     langEl.value = settings.lang;
     langEl.addEventListener("change", (e) => {
       saveSetting("lang", e.target.value);
+      stopAdminRefresh();
       panel.remove();
       buildPanel();
       const np = getPanel();
@@ -1781,25 +1932,27 @@
   // Source: https://spicetify.app/docs — Platform.UserAPI.getUser() and CosmosAsync
   // --------------------------------------------------------------------------
   async function tryGetSpotifyUsername() {
-    if (localStorage.getItem("sync_username")) return;
+    // Capture the real account display name even if a custom username is saved,
+    // because the admin gate keys off the Spotify account, not the editable field.
+    const apply = (name) => {
+      if (!name || typeof name !== "string" || !name.trim()) return false;
+      spotifyDisplayName = name.trim();
+      if (!localStorage.getItem("sync_username")) {
+        username = spotifyDisplayName.slice(0, 32);
+        localStorage.setItem("sync_username", username);
+      }
+      maybeRevealAdminButton();
+      return true;
+    };
     try {
       // Method 1 (official): Platform.UserAPI.getUser() -> displayName
       const user = await Spicetify.Platform.UserAPI.getUser();
-      const name = user?.displayName;
-      if (name && typeof name === "string" && name.trim()) {
-        username = name.trim().slice(0, 32);
-        localStorage.setItem("sync_username", username);
-        return;
-      }
+      if (apply(user?.displayName)) return;
     } catch (_) {}
     try {
       // Method 2 (fallback): Spotify Web API via CosmosAsync (auth injected automatically)
       const me = await Spicetify.CosmosAsync.get("https://api.spotify.com/v1/me");
-      const name = me?.display_name;
-      if (name && typeof name === "string" && name.trim()) {
-        username = name.trim().slice(0, 32);
-        localStorage.setItem("sync_username", username);
-      }
+      apply(me?.display_name);
     } catch (_) {}
   }
 
