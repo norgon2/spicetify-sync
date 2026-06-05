@@ -316,20 +316,7 @@
 
   // Admin button lives in the Spicetify topbar (top of the screen).
   // Created only when the Spotify account is ADMIN_USERNAME — strict gate.
-  function maybeRevealAdminButton() {
-    if (spotifyDisplayName !== ADMIN_USERNAME) return;
-    if (adminTopbarBtn) return;
-    if (!window.Spicetify?.Topbar?.Button) return;
-    const shieldSvg =
-      '<svg role="img" height="16" width="16" viewBox="0 0 16 16" fill="currentColor">' +
-      '<path d="M8 1 2 3.2v4.3c0 4 3.4 6.4 6 7.3 2.6-.9 6-3.3 6-7.3V3.2L8 1z"/></svg>';
-    adminTopbarBtn = new window.Spicetify.Topbar.Button(
-      "Spicetify Sync Admin",
-      shieldSvg,
-      () => { const p = getAdminPanel(); if (p) closeAdminPanel(); else buildAdminPanel(); },
-      false
-    );
-  }
+  function maybeRevealAdminButton() {}
 
   // Standalone admin modal (centered, dark overlay) — independent of the Sync panel.
   function getAdminPanel() { return document.getElementById("sync-admin-panel"); }
@@ -2121,7 +2108,6 @@
       document.body.appendChild(btn);
     }
 
-    maybeRevealAdminButton();
     updateButtonState();
   }
 
@@ -2139,7 +2125,6 @@
         username = spotifyDisplayName.slice(0, 32);
         localStorage.setItem("sync_username", username);
       }
-      maybeRevealAdminButton();
       return true;
     };
     try {
