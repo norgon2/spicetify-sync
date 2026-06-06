@@ -55,6 +55,28 @@ Lis `sync.js` en entier, puis raisonne sur chaque scénario ci-dessous. Pour cha
 29. `position = 0` dans `pause` → Player.seek(0) bien appelé
 30. `suppressCount > 0` → les événements player locaux sont ignorés
 
+## Argument --fix
+
+Si `--fix` est passé en argument, après avoir produit l'analyse complète :
+
+1. **Applique chaque correction dans `sync.js`** — corrige directement le code pour chaque bug trouvé. Si une correction est ambiguë ou risquée, la noter comme skippée plutôt que de deviner.
+2. **Copie `sync.js` vers le dossier Spicetify** :
+   ```powershell
+   Copy-Item C:\spicetify-sync-extension\sync.js "$env:APPDATA\spicetify\Extensions\sync.js" -Force
+   ```
+3. **Applique dans Spotify** :
+   ```powershell
+   spicetify apply
+   ```
+4. **Commit et push** :
+   ```powershell
+   git add C:\spicetify-sync-extension\sync.js
+   git commit -m "fix: corrections issues détectées par test-scenarios"
+   git push
+   ```
+
+Sans `--fix`, le skill se limite à l'analyse.
+
 ## Format de sortie
 
 Pour chaque bug trouvé :
@@ -67,3 +89,5 @@ Correction suggérée : …
 ```
 
 Si aucun bug : "✓ Aucun bug détecté pour ce scénario."
+
+Si `--fix` a été passé, terminer par un récapitulatif des corrections appliquées et des éventuels skips.
