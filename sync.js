@@ -686,7 +686,7 @@
         try {
           if (Player.data?.item?.uri !== uri) {
             suppressFor(1200);
-            if (contextUri && isSpotifyUri(contextUri) && contextUri !== uri) {
+            if (contextUri && isSpotifyUri(contextUri) && contextUri !== uri && role !== "host") {
               await Player.playUri(contextUri, {}, { skipTo: { uri }, seekTo: position || 0 });
             } else {
               await Player.playUri(uri, {}, { seekTo: position || 0 });
@@ -736,7 +736,7 @@
         const seq = ++changeSeq;
         suppressFor(1200);
         try {
-          if (contextUri && isSpotifyUri(contextUri) && contextUri !== uri) {
+          if (contextUri && isSpotifyUri(contextUri) && contextUri !== uri && role !== "host") {
             await Player.playUri(contextUri, {}, { skipTo: { uri }, seekTo: safePos });
           } else {
             await Player.playUri(uri, {}, { seekTo: safePos });
