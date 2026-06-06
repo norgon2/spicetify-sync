@@ -765,14 +765,8 @@
           const adjPos = Math.min(position + latency + settings.syncDelay, MAX_POSITION_MS);
           if (Player.data?.item?.uri !== uri) {
             try {
-              if (contextUri && isSpotifyUri(contextUri) && contextUri !== uri) {
-                await Player.playUri(contextUri, {}, { skipTo: { uri }, seekTo: adjPos });
-              } else {
-                await Player.playUri(uri, {}, { seekTo: adjPos });
-              }
-            } catch (_) {
-              try { await Player.playUri(uri, {}, { seekTo: adjPos }); } catch (_) {}
-            }
+              await Player.playUri(uri, {}, { seekTo: adjPos });
+            } catch (_) {}
             if (seq !== syncSeq) return;
             resetSeekBaseline(adjPos);
             if (!isPlaying) {
