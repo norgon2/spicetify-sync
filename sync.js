@@ -374,18 +374,14 @@
         updateButtonState();
       });
 
-      socket.on("play", async ({ uri, position, contextUri } = {}) => {
+      socket.on("play", async ({ uri, position } = {}) => {
         if (!isConnected || !isSpotifyUri(uri)) return;
         if (position != null && !isSafeNum(position, 0, MAX_POSITION_MS)) return;
         try {
           if (Player.data?.item?.uri !== uri) {
             suppressFor(1200);
-            if (contextUri && isSpotifyUri(contextUri) && contextUri !== uri) {
-              await Player.playUri(contextUri, {}, { skipTo: { uri }, seekTo: position || 0 });
-            } else {
-              await Player.playUri(uri, {}, { seekTo: position || 0 });
-            }
-            resetSeekBaseline(position || 0);
+            await Player.playUri(uri, {}, { seekTo: position ?? 0 });
+            resetSeekBaseline(position ?? 0);
           } else {
             suppressFor(500);
             if (position != null) await Player.seek(position);
@@ -420,7 +416,7 @@
       });
 
       let changeSeq = 0;
-      socket.on("change_track", async ({ uri, position, contextUri } = {}) => {
+      socket.on("change_track", async ({ uri, position } = {}) => {
         if (!isConnected || !isSpotifyUri(uri)) return;
         addToHistory(Player.data?.item);
         mySkipVoted = false;
@@ -430,11 +426,7 @@
         const seq = ++changeSeq;
         suppressFor(1200);
         try {
-          if (contextUri && isSpotifyUri(contextUri) && contextUri !== uri) {
-            await Player.playUri(contextUri, {}, { skipTo: { uri }, seekTo: safePos });
-          } else {
-            await Player.playUri(uri, {}, { seekTo: safePos });
-          }
+          await Player.playUri(uri, {}, { seekTo: safePos });
           if (seq !== changeSeq) return;
           resetSeekBaseline(safePos);
         } catch (e) {
@@ -448,7 +440,7 @@
       });
 
       let syncSeq = 0;
-      socket.on("sync_state", async ({ uri, position, isPlaying, contextUri, sentAt } = {}) => {
+      socket.on("sync_state", async ({ uri, position, isPlaying, sentAt } = {}) => {
         if (role !== "guest" || !isSpotifyUri(uri) || !isSafeNum(position, 0, MAX_POSITION_MS)) return;
         const seq = ++syncSeq;
         suppressFor(1500);
@@ -458,15 +450,7 @@
             : 0;
           const adjPos = Math.min(position + latency + settings.syncDelay, MAX_POSITION_MS);
           if (Player.data?.item?.uri !== uri) {
-            try {
-              if (contextUri && isSpotifyUri(contextUri) && contextUri !== uri) {
-                await Player.playUri(contextUri, {}, { skipTo: { uri }, seekTo: adjPos });
-              } else {
-                await Player.playUri(uri, {}, { seekTo: adjPos });
-              }
-            } catch (_) {
-              try { await Player.playUri(uri, {}, { seekTo: adjPos }); } catch (_) {}
-            }
+            try { await Player.playUri(uri, {}, { seekTo: adjPos }); } catch (_) {}
             if (seq !== syncSeq) return;
             resetSeekBaseline(adjPos);
             if (!isPlaying) {
