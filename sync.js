@@ -70,7 +70,7 @@
   const MAX_POSITION_MS = 86400000; // 24 h — max reasonable track position
 
   function isSpotifyUri(v) {
-    return typeof v === "string" && /^spotify:[a-z]+:[A-Za-z0-9]{22}$/.test(v);
+    return typeof v === "string" && /^spotify:[a-z]+:[A-Za-z0-9][A-Za-z0-9:_.+-]{1,149}$/.test(v);
   }
   function isSafeNum(v, min = 0, max = Infinity) {
     return typeof v === "number" && isFinite(v) && v >= min && v <= max;
