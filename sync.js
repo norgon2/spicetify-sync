@@ -756,12 +756,12 @@
             : 0;
           const adjPos = Math.min(position + latency + settings.syncDelay, MAX_POSITION_MS);
           if (Player.data?.item?.uri !== uri) {
-            try {
-              await Player.playUri(uri, {}, { seekTo: adjPos });
-            } catch (_) {}
+            try { await Player.playUri(uri, {}, { seekTo: adjPos }); } catch (_) {}
             if (seq !== syncSeq) return;
             resetSeekBaseline(adjPos);
-            if (!isPlaying) {
+            if (isPlaying) {
+              try { await Player.play(); } catch (_) {}
+            } else {
               await new Promise((r) => setTimeout(r, 800));
               if (seq === syncSeq) { suppressFor(600); await Player.pause(); }
             }
