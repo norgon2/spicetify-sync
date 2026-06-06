@@ -41,14 +41,6 @@
   let _lastRoomInfoHtml   = null;
   let participants        = [];
   let participantsTimer   = null;
-  let spotifyDisplayName  = null;       // real account name from UserAPI (admin gate)
-  let adminToken          = null;       // session-only, never persisted
-  let adminRefreshTimer   = null;
-  let adminDurTimer       = null;       // 1s ticker for connected-duration labels
-  let adminTopbarBtn      = null;       // Spicetify.Topbar.Button instance
-  let adminCache          = { data: null, at: 0 };  // 5s cache for instant reopen
-  const trackNameCache    = new Map();  // uri -> "Track — Artist" | null
-  const ADMIN_USERNAME    = "Norgon";
 
   // Prevents event echo: applying a remote command triggers local Player events
   // (onplaypause, songchange) that would re-broadcast it. suppressFor() increments
@@ -70,10 +62,20 @@
   const MAX_POSITION_MS = 86400000; // 24 h — max reasonable track position
 
   function isSpotifyUri(v) {
-    return typeof v === "string" && /^spotify:[a-z]+:[A-Za-z0-9][A-Za-z0-9:_.+-]{1,149}$/.test(v);
+    return typeof v === "string" && /^spotify:[a-z]+:[A-Za-z0-9]{22}$/.test(v);
   }
   function isSafeNum(v, min = 0, max = Infinity) {
     return typeof v === "number" && isFinite(v) && v >= min && v <= max;
+  }
+
+  // Returns the actual current playback position, accounting for time elapsed since
+  // Spicetify's last snapshot (positionAsOfTimestamp + elapsed since timestamp).
+  function getRealtimePos(state) {
+    if (!state) return 0;
+    const base = state.positionAsOfTimestamp || 0;
+    if (state.isPaused) return base;
+    const age = Math.max(0, Date.now() - (state.timestamp || Date.now()));
+    return Math.min(base + age, MAX_POSITION_MS);
   }
 
   // --------------------------------------------------------------------------
@@ -207,320 +209,6 @@
   // Socket.io bundled inline — no CDN dependency
   function loadSocketIO(callback) { callback(); }
 
-  // Single source of truth for the server base URL (used by connect + admin).
-  function buildServerURL() {
-    const isLocal = serverIP === "localhost" || serverIP === "127.0.0.1";
-    const isIP    = /^[\d.]+$/.test(serverIP);
-    return isLocal ? `http://${serverIP}:3000`
-         : isIP    ? `https://${serverIP}:3000`
-                   : `https://${serverIP}`;
-  }
-
-  // --------------------------------------------------------------------------
-  // Admin dashboard (gated to the Spotify account named ADMIN_USERNAME).
-  // The username gate is cosmetic — the real protection is the server token.
-  // Token is typed in the modal, hashed (SHA-256) and sent as x-admin-token;
-  // it is never persisted to localStorage.
-  // --------------------------------------------------------------------------
-  async function sha256Hex(str) {
-    const buf = await window.crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
-    return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
-  }
-
-  async function adminFetch(path, opts) {
-    const hash = await sha256Hex(adminToken);
-    return fetch(`${buildServerURL()}${path}`, {
-      ...opts,
-      headers: { "x-admin-token": hash, ...(opts && opts.headers) },
-    });
-  }
-
-  function setAdminSpinner(on) {
-    const sp = document.getElementById("sync-admin-spinner");
-    if (sp) sp.style.display = on ? "flex" : "none";
-  }
-
-  async function fetchAdminData(withSpinner) {
-    if (!adminToken) return;
-    if (withSpinner) setAdminSpinner(true);
-    try {
-      const res = await adminFetch("/admin");
-      if (res.status === 429) { setAdminSpinner(false); return; }   // polled too fast
-      if (res.status === 401) {
-        showNotification("Admin: invalid token.", true);
-        adminToken = null; stopAdminRefresh(); showAdminAuth(true); return;
-      }
-      if (res.status === 503) {
-        showNotification("Admin: disabled on server (no ADMIN_TOKEN).", true);
-        stopAdminRefresh(); setAdminSpinner(false); return;
-      }
-      if (!res.ok) { setAdminSpinner(false); return; }
-      const data = await res.json();
-      adminCache = { data, at: Date.now() };
-      renderAdminData(data);
-    } catch (_) { setAdminSpinner(false); }
-  }
-
-  async function adminAction(path, body, okMsg) {
-    if (!adminToken) return;
-    try {
-      const res = await adminFetch(path, {
-        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
-      });
-      if (res.ok) { if (okMsg) showNotification(okMsg); fetchAdminData(false); }
-      else showNotification("Action failed.", true);
-    } catch (_) { showNotification("Action failed.", true); }
-  }
-  function kickRoom(code)        { if (/^[A-Z0-9]{6}$/i.test(code)) adminAction("/admin/kick", { code }, `Room ${code} kicked.`); }
-  function kickParticipant(id)   { if (id) adminAction("/admin/kick-participant", { id }, "Participant kicked."); }
-  function adminBroadcast(text)  { const t2 = String(text).trim(); if (t2) adminAction("/admin/broadcast", { text: t2 }, "Message broadcasted."); }
-  function setMaintenance(on)    { adminAction("/admin/maintenance", { enabled: on }, on ? "Maintenance ON." : "Maintenance OFF."); }
-
-  function startAdminRefresh() {
-    stopAdminRefresh();
-    const fresh = adminCache.data && (Date.now() - adminCache.at < 5000);
-    if (fresh) renderAdminData(adminCache.data);    // instant reopen, no spinner
-    fetchAdminData(!fresh);
-    adminRefreshTimer = setInterval(() => fetchAdminData(false), 6000);
-    adminDurTimer     = setInterval(updateParticipantDurations, 1000);
-  }
-  function stopAdminRefresh() {
-    clearInterval(adminRefreshTimer); adminRefreshTimer = null;
-    clearInterval(adminDurTimer);     adminDurTimer     = null;
-  }
-
-  // Resolve spotify:track URIs to "Name — Artist" via the Web API (cached).
-  async function resolveTrackName(uri) {
-    if (trackNameCache.has(uri)) return trackNameCache.get(uri);
-    const m = typeof uri === "string" && uri.match(/^spotify:track:([A-Za-z0-9]{22})$/);
-    if (!m) { trackNameCache.set(uri, null); return null; }
-    try {
-      const tr = await Spicetify.CosmosAsync.get(`https://api.spotify.com/v1/tracks/${m[1]}`);
-      const name = tr && tr.name
-        ? tr.name + (tr.artists && tr.artists[0] ? " — " + tr.artists[0].name : "")
-        : null;
-      trackNameCache.set(uri, name);
-      return name;
-    } catch (_) { return null; }
-  }
-
-  function resolveTracksInDom() {
-    const sess = document.getElementById("sync-admin-sessions");
-    if (!sess) return;
-    sess.querySelectorAll(".sync-admin-track[data-uri]").forEach(async (el) => {
-      const uri  = el.dataset.uri;
-      const name = await resolveTrackName(uri);
-      el.textContent = "♪ " + (name || uri.replace("spotify:track:", ""));
-    });
-  }
-
-  // Admin button lives in the Spicetify topbar (top of the screen).
-  // Created only when the Spotify account is ADMIN_USERNAME — strict gate.
-  function maybeRevealAdminButton() {}
-
-  // Standalone admin modal (centered, dark overlay) — independent of the Sync panel.
-  function getAdminPanel() { return document.getElementById("sync-admin-panel"); }
-
-  function onAdminKeydown(e) { if (e.key === "Escape") closeAdminPanel(); }
-
-  function closeAdminPanel() {
-    stopAdminRefresh();
-    document.removeEventListener("keydown", onAdminKeydown);
-    const p = getAdminPanel();
-    if (p) p.remove();
-  }
-
-  function buildAdminPanel() {
-    if (getAdminPanel()) return;
-    injectStyles();
-
-    const INP = "width:100%;box-sizing:border-box;padding:8px 10px;background:var(--spice-main,rgba(0,0,0,0.25));border:1px solid rgba(255,255,255,0.08);border-radius:6px;color:var(--spice-text,#fff);font-size:12px;outline:none;font-family:inherit";
-    const LBL = "font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--spice-subtext,#a7a7a7);margin-bottom:5px;display:block";
-
-    const overlay = document.createElement("div");
-    overlay.id = "sync-admin-panel";
-    overlay.style.cssText = [
-      "position:fixed", "inset:0", "z-index:99990",
-      "background:rgba(0,0,0,0.6)", "backdrop-filter:blur(2px)",
-      "display:flex", "align-items:center", "justify-content:center",
-      "animation:syncFadeIn 0.18s ease forwards",
-      "font-family:var(--font-family,CircularSp,-apple-system,sans-serif)",
-    ].join(";");
-
-    const modal = document.createElement("div");
-    modal.style.cssText = [
-      "width:600px", "max-width:92vw", "height:500px", "max-height:86vh",
-      "background:var(--spice-card,#282828)", "border-radius:14px",
-      "border:1px solid rgba(255,255,255,0.08)",
-      "box-shadow:0 12px 48px rgba(0,0,0,0.7)",
-      "display:flex", "flex-direction:column", "overflow:hidden",
-      "color:var(--spice-text,#ffffff)", "font-size:13px",
-      "animation:syncModalIn 0.2s cubic-bezier(0.4,0,0.2,1) forwards",
-    ].join(";");
-
-    modal.innerHTML = `
-<div style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid rgba(255,255,255,0.06);flex-shrink:0">
-  <div style="display:flex;align-items:center;gap:9px">
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="var(--spice-button,#1db954)"><path d="M8 1 2 3.2v4.3c0 4 3.4 6.4 6 7.3 2.6-.9 6-3.3 6-7.3V3.2L8 1z"/></svg>
-    <span style="font-size:15px;font-weight:800;letter-spacing:-0.01em">Admin Dashboard</span>
-  </div>
-  <button id="sync-admin-close" style="background:none;border:none;cursor:pointer;color:var(--spice-subtext,#a7a7a7);display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;padding:0">
-    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="1" y1="1" x2="11" y2="11"/><line x1="11" y1="1" x2="1" y2="11"/></svg>
-  </button>
-</div>
-<div style="flex:1;overflow-y:auto;padding:16px">
-  <div id="sync-admin-auth" style="display:flex;flex-direction:column;gap:8px;max-width:320px">
-    <span style="${LBL}">Admin token</span>
-    <input id="sync-admin-token" type="password" placeholder="Enter admin token" style="${INP}" autocomplete="off"/>
-    <button id="sync-admin-auth-btn" style="width:100%;padding:9px;background:var(--spice-button,#1db954);border:none;border-radius:50px;color:var(--spice-button-text,#000);font-weight:700;cursor:pointer;font-size:12px;font-family:inherit">Authenticate</button>
-  </div>
-  <div id="sync-admin-data" style="display:none"></div>
-</div>`;
-
-    overlay.appendChild(modal);
-    document.body.appendChild(overlay);
-
-    overlay.addEventListener("click", (e) => { if (e.target === overlay) closeAdminPanel(); });
-    document.addEventListener("keydown", onAdminKeydown);
-    modal.querySelector("#sync-admin-close").addEventListener("click", closeAdminPanel);
-    modal.querySelector("#sync-admin-auth-btn").addEventListener("click", () => {
-      const tokenInput = modal.querySelector("#sync-admin-token");
-      const v = tokenInput.value.trim();
-      if (!v) return;
-      adminToken = v;
-      tokenInput.value = "";
-      showAdminAuth(false);
-      startAdminRefresh();
-    });
-    modal.querySelector("#sync-admin-token").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") modal.querySelector("#sync-admin-auth-btn").click();
-    });
-
-    if (adminToken) { showAdminAuth(false); startAdminRefresh(); }
-    else            showAdminAuth(true);
-  }
-
-  function showAdminAuth(needAuth) {
-    const p = getAdminPanel(); if (!p) return;
-    const auth = p.querySelector("#sync-admin-auth");
-    const data = p.querySelector("#sync-admin-data");
-    if (auth) auth.style.display = needAuth ? "flex" : "none";
-    if (data) {
-      data.style.display = needAuth ? "none" : "block";
-      if (!needAuth && !data.dataset.built) buildAdminDataSkeleton(data);
-    }
-  }
-
-  // Static structure built once after auth — keeps the broadcast input & maintenance
-  // button alive (with their listeners) across the 6s data refreshes.
-  function buildAdminDataSkeleton(data) {
-    data.dataset.built = "1";
-    const SECT = "font-size:9px;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:var(--spice-subtext,#a7a7a7);margin:0 0 8px";
-    const INP_INLINE = "box-sizing:border-box;padding:8px 10px;background:var(--spice-main,rgba(0,0,0,0.25));border:1px solid rgba(255,255,255,0.08);border-radius:6px;color:var(--spice-text,#fff);font-size:12px;outline:none;font-family:inherit";
-    data.innerHTML = `
-<div id="sync-admin-spinner" style="display:none;align-items:center;justify-content:center;padding:24px"><div class="sync-spinner"></div></div>
-<div style="${SECT}">Statistics</div>
-<div id="sync-admin-stats" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:18px"></div>
-<div style="${SECT}">Active sessions</div>
-<div id="sync-admin-sessions" style="margin-bottom:18px"></div>
-<div style="${SECT}">Staff actions</div>
-<div style="display:flex;gap:6px;margin-bottom:8px">
-  <input id="sync-admin-bcast" type="text" placeholder="Broadcast message to all sessions…" maxlength="200" style="${INP_INLINE};flex:1"/>
-  <button id="sync-admin-bcast-btn" style="padding:8px 16px;background:var(--spice-button,#1db954);border:none;border-radius:50px;color:var(--spice-button-text,#000);font-weight:700;font-size:11px;cursor:pointer;font-family:inherit;flex-shrink:0">Send</button>
-</div>
-<button id="sync-admin-maint" data-on="0" style="width:100%;padding:9px;border-radius:50px;font-weight:700;cursor:pointer;font-size:12px;font-family:inherit;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.06);color:var(--spice-text,#fff)">Maintenance mode</button>`;
-
-    const bcast = data.querySelector("#sync-admin-bcast");
-    const send  = () => { const v = bcast.value.trim(); if (!v) return; adminBroadcast(v); bcast.value = ""; };
-    data.querySelector("#sync-admin-bcast-btn").addEventListener("click", send);
-    bcast.addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
-    data.querySelector("#sync-admin-maint").addEventListener("click", (e) => {
-      setMaintenance(e.currentTarget.dataset.on !== "1");
-    });
-  }
-
-  function adminStat(label, val) {
-    return `<div style="flex:1;min-width:84px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:10px;text-align:center">` +
-      `<div style="font-size:20px;font-weight:900;color:var(--spice-button,#1db954);line-height:1.1">${escHtml(val ?? 0)}</div>` +
-      `<div style="font-size:9px;color:var(--spice-subtext,#a7a7a7);text-transform:uppercase;letter-spacing:0.06em;margin-top:3px">${escHtml(label)}</div></div>`;
-  }
-
-  function fmtUptime(ms) {
-    const s = Math.floor((ms || 0) / 1000);
-    const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
-    if (d > 0) return `${d}d ${h}h`;
-    if (h > 0) return `${h}h ${m}m`;
-    return `${m}m`;
-  }
-
-  function adminTrackCell(uri) {
-    if (!uri) return `<span style="font-size:11px;color:var(--spice-subtext,#a7a7a7)">— no track —</span>`;
-    const cached = trackNameCache.get(uri);
-    const shown  = cached === undefined ? "♪ …"
-                 : cached === null      ? "♪ " + uri.replace("spotify:track:", "")
-                                        : "♪ " + cached;
-    const attr   = cached === undefined ? ` data-uri="${escHtml(uri)}"` : "";
-    return `<span class="sync-admin-track"${attr} style="font-size:11px;color:var(--spice-button,#1db954)">${escHtml(shown)}</span>`;
-  }
-
-  function adminRoomRow(r) {
-    const members = (Array.isArray(r.members) ? r.members : []).map((m) => {
-      const roleColor = m.role === "host" ? "var(--spice-button,#1db954)" : m.role === "cohost" ? "#f59b00" : "#1e90ff";
-      const kickBtn = m.role !== "host"
-        ? `<button class="sync-admin-kickp" data-id="${escHtml(m.id)}" title="Kick participant" style="background:none;border:none;color:#e22134;cursor:pointer;font-size:13px;padding:0 2px;line-height:1">✕</button>`
-        : "";
-      return `<div style="display:flex;align-items:center;justify-content:space-between;gap:6px;padding:3px 0">` +
-        `<span style="font-size:11px;color:var(--spice-text,#fff);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px">${escHtml(m.username)}</span>` +
-        `<span style="display:flex;align-items:center;gap:8px;flex-shrink:0">` +
-          `<span style="font-size:10px;color:${roleColor};font-weight:700">${escHtml(m.role)}</span>` +
-          `<span class="sync-dur" data-at="${escHtml(m.connectedAt)}" style="font-size:10px;color:var(--spice-subtext,#a7a7a7);min-width:42px;text-align:right"></span>` +
-          kickBtn +
-        `</span></div>`;
-    }).join("");
-    return `<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:10px;margin-bottom:8px">` +
-      `<div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:6px">` +
-        `<span style="font-family:monospace;font-weight:800;font-size:14px;color:var(--spice-text,#fff);letter-spacing:0.12em">${escHtml(r.code)}</span>` +
-        `<button class="sync-admin-kick" data-code="${escHtml(r.code)}" style="padding:3px 10px;background:rgba(226,33,52,0.15);border:1px solid rgba(226,33,52,0.4);border-radius:50px;color:#e22134;font-size:10px;font-weight:700;cursor:pointer;font-family:inherit;flex-shrink:0">Kick room</button>` +
-      `</div>` +
-      `<div style="margin-bottom:6px">${adminTrackCell(r.currentUri)}</div>` +
-      `<div>${members || `<span style="font-size:11px;color:var(--spice-subtext,#a7a7a7)">No members</span>`}</div></div>`;
-  }
-
-  function renderAdminData(data) {
-    setAdminSpinner(false);
-    const statsEl = document.getElementById("sync-admin-stats");
-    const sessEl  = document.getElementById("sync-admin-sessions");
-    if (!statsEl || !sessEl || !data) return;
-    const s = data.stats || {};
-
-    statsEl.innerHTML =
-      adminStat("Total conns", s.totalConnections) +
-      adminStat("Peak", s.peakConnections) +
-      adminStat("Rooms today", s.roomsCreatedToday) +
-      adminStat("Uptime", fmtUptime(s.uptimeMs)) +
-      adminStat("Active rooms", s.activeRooms) +
-      adminStat("Online", s.connected);
-
-    const rooms = Array.isArray(data.rooms) ? data.rooms : [];
-    sessEl.innerHTML = rooms.length
-      ? rooms.map(adminRoomRow).join("")
-      : `<div style="font-size:11px;color:var(--spice-subtext,#a7a7a7)">No active sessions</div>`;
-    sessEl.querySelectorAll(".sync-admin-kick").forEach((b) => b.addEventListener("click", () => kickRoom(b.dataset.code)));
-    sessEl.querySelectorAll(".sync-admin-kickp").forEach((b) => b.addEventListener("click", () => kickParticipant(b.dataset.id)));
-    updateParticipantDurations();
-    resolveTracksInDom();
-
-    const maintBtn = document.getElementById("sync-admin-maint");
-    if (maintBtn) {
-      const on = !!s.maintenance;
-      maintBtn.dataset.on    = on ? "1" : "0";
-      maintBtn.textContent   = on ? "Maintenance ON — click to disable" : "Enable maintenance mode";
-      maintBtn.style.border  = `1px solid ${on ? "rgba(226,33,52,0.5)" : "rgba(255,255,255,0.12)"}`;
-      maintBtn.style.background = on ? "rgba(226,33,52,0.18)" : "rgba(255,255,255,0.06)";
-      maintBtn.style.color   = on ? "#e22134" : "var(--spice-text,#fff)";
-    }
-  }
-
   // Host creates the room; server assigns a code via room_created.
   // Guest joins with the 6-char code. Both roles re-register using the
   // closure-captured selectedRole on every Socket.io auto-reconnect.
@@ -544,7 +232,13 @@
         resetPanelUI();
         return;
       }
-      const serverURL = buildServerURL();
+      const isLocal = serverIP === "localhost" || serverIP === "127.0.0.1";
+      const isIP    = /^[\d.]+$/.test(serverIP);
+      const serverURL = isLocal
+        ? `http://${serverIP}:3000`
+        : isIP
+          ? `https://${serverIP}:3000`
+          : `https://${serverIP}`;
 
       socket = window.io(serverURL, {
         transports: ["websocket"],
@@ -686,7 +380,11 @@
         try {
           if (Player.data?.item?.uri !== uri) {
             suppressFor(1200);
-            await Player.playUri(uri, {}, { seekTo: position || 0 });
+            if (contextUri && isSpotifyUri(contextUri) && contextUri !== uri) {
+              await Player.playUri(contextUri, {}, { skipTo: { uri }, seekTo: position || 0 });
+            } else {
+              await Player.playUri(uri, {}, { seekTo: position || 0 });
+            }
             resetSeekBaseline(position || 0);
           } else {
             suppressFor(500);
@@ -732,7 +430,11 @@
         const seq = ++changeSeq;
         suppressFor(1200);
         try {
-          await Player.playUri(uri, {}, { seekTo: safePos });
+          if (contextUri && isSpotifyUri(contextUri) && contextUri !== uri) {
+            await Player.playUri(contextUri, {}, { skipTo: { uri }, seekTo: safePos });
+          } else {
+            await Player.playUri(uri, {}, { seekTo: safePos });
+          }
           if (seq !== changeSeq) return;
           resetSeekBaseline(safePos);
         } catch (e) {
@@ -747,8 +449,7 @@
 
       let syncSeq = 0;
       socket.on("sync_state", async ({ uri, position, isPlaying, contextUri, sentAt } = {}) => {
-        if (role !== "guest") return;
-        if (!isSpotifyUri(uri) || !isSafeNum(position, 0, MAX_POSITION_MS)) return;
+        if (role !== "guest" || !isSpotifyUri(uri) || !isSafeNum(position, 0, MAX_POSITION_MS)) return;
         const seq = ++syncSeq;
         suppressFor(1500);
         try {
@@ -757,12 +458,18 @@
             : 0;
           const adjPos = Math.min(position + latency + settings.syncDelay, MAX_POSITION_MS);
           if (Player.data?.item?.uri !== uri) {
-            try { await Player.playUri(uri, {}, { seekTo: adjPos }); } catch (_) {}
+            try {
+              if (contextUri && isSpotifyUri(contextUri) && contextUri !== uri) {
+                await Player.playUri(contextUri, {}, { skipTo: { uri }, seekTo: adjPos });
+              } else {
+                await Player.playUri(uri, {}, { seekTo: adjPos });
+              }
+            } catch (_) {
+              try { await Player.playUri(uri, {}, { seekTo: adjPos }); } catch (_) {}
+            }
             if (seq !== syncSeq) return;
             resetSeekBaseline(adjPos);
-            if (isPlaying) {
-              try { await Player.play(); } catch (_) {}
-            } else {
+            if (!isPlaying) {
               await new Promise((r) => setTimeout(r, 800));
               if (seq === syncSeq) { suppressFor(600); await Player.pause(); }
             }
@@ -783,11 +490,10 @@
         if (role !== "host" || typeof guestId !== "string") return;
         const state = Player.data;
         if (!state?.item?.uri) return;
-        suppressFor(800);
         socket.emit("sync_state", {
           guestId,
           uri:        state.item.uri,
-          position:   state.positionAsOfTimestamp || 0,
+          position:   getRealtimePos(state),
           isPlaying:  !state.isPaused,
           contextUri: state.context?.uri ?? null,
           sentAt:     Date.now(),
@@ -841,7 +547,6 @@
         role = "host";
         cohostMode = false;
         waitingForHost = false;
-        resetSeekBaseline();
         showNotification("You are now the host!", false);
         startSyncCheck();
         setConnectedPanelUI("host");
@@ -852,10 +557,6 @@
         showNotification("You have been removed from the room.", true);
         disconnect();
         resetPanelUI();
-      });
-
-      socket.on("admin_message", ({ text } = {}) => {
-        if (typeof text === "string" && text.trim()) showNotification(`📢 ${text.trim().slice(0, 200)}`);
       });
 
       socket.on("sync_ping", ({ uri, position, isPlaying, sentAt } = {}) => {
@@ -871,7 +572,7 @@
         }
         const elapsed     = Math.max(0, Date.now() - sentAt);
         const expectedPos = Math.min(position + (isPlaying ? elapsed : 0), MAX_POSITION_MS);
-        const guestPos    = state.positionAsOfTimestamp || 0;
+        const guestPos    = getRealtimePos(state);
         const drift       = Math.abs(guestPos - expectedPos);
         updateSyncIndicator(drift, true);
         if (drift > 2000 && !suppressCount) socket.emit("request_sync");
@@ -924,7 +625,12 @@
     if (!isController() || suppressCount > 0 || !socket?.connected) return;
     const state = Player.data;
     if (!state?.item?.uri) return;
-    const position = state.positionAsOfTimestamp || 0;
+    const position = getRealtimePos(state);
+    // When Spotify seeks, it fires onplaypause with positionAsOfTimestamp=0 as a
+    // transition artifact. If a seek is already pending and the reported position is
+    // suspiciously near zero while we were well into the track, skip this event —
+    // the seekPoll will emit the correct seek position instead.
+    if (!state.isPaused && seekPollPending && position < 500 && seekPollPos > 2000) return;
     if (state.isPaused) {
       socket.emit("pause", { position });
     } else {
@@ -1016,13 +722,13 @@
             seekPollDebounce = setTimeout(() => {
               seekPollPending = false;
               if (!socket?.connected) return;
-              const emitPos  = Player.data?.positionAsOfTimestamp || pos;
+              const emitPos  = getRealtimePos(Player.data) || pos;
               const emitNow  = Date.now();
               seekPollPos  = emitPos;
               seekPollTime = emitNow;
               socket.emit("seek", { position: emitPos, sentAt: emitNow });
               suppressFor(500);
-            }, 150);
+            }, 300);
           }
           seekPollTime  = now;
           seekPollTimer = setTimeout(step, delay);
@@ -1058,7 +764,7 @@
       if (!state?.item?.uri) return;
       socket.emit("sync_ping", {
         uri:       state.item.uri,
-        position:  state.positionAsOfTimestamp || 0,
+        position:  getRealtimePos(state),
         isPlaying: !state.isPaused,
         sentAt:    Date.now(),
       });
@@ -1490,19 +1196,6 @@
       }
       #sync-panel { animation: syncPopIn 0.18s cubic-bezier(0.4,0,0.2,1) forwards; }
 
-      @keyframes syncFadeIn { from { opacity: 0; } to { opacity: 1; } }
-      @keyframes syncModalIn {
-        from { opacity: 0; transform: translateY(8px) scale(0.97); }
-        to   { opacity: 1; transform: translateY(0)   scale(1);    }
-      }
-      @keyframes syncSpin { to { transform: rotate(360deg); } }
-      .sync-spinner {
-        width: 28px; height: 28px; border-radius: 50%;
-        border: 3px solid rgba(255,255,255,0.15);
-        border-top-color: var(--spice-button, #1db954);
-        animation: syncSpin 0.7s linear infinite;
-      }
-
       #sync-toggle-btn { cursor: default !important; }
       #sync-toggle-btn:hover { cursor: default !important; }
       #sync-toggle-btn::before, #sync-toggle-btn::after { content: none !important; display: none !important; }
@@ -1722,10 +1415,7 @@
   <div id="sync-inputs-section" style="display:flex;flex-direction:column;gap:10px">
     <div>
       <span style="${LBL}">${t("server")}</span>
-      <div style="display:flex;gap:6px;align-items:center">
-        <input id="sync-ip" type="text" style="${INP};flex:1;color:var(--spice-subtext,#a7a7a7);cursor:default" readonly/>
-        <button id="sync-ip-edit" style="padding:4px 10px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:6px;color:var(--spice-subtext,#a7a7a7);font-size:10px;font-weight:700;cursor:pointer;font-family:inherit;flex-shrink:0;transition:opacity 0.15s;white-space:nowrap">Edit</button>
-      </div>
+      <input id="sync-ip" type="text" placeholder="${t("serverPh")}" style="${INP}"/>
     </div>
     <div>
       <span style="${LBL}">${t("username")}</span>
@@ -1838,9 +1528,7 @@
     <div style="${SDESC};margin-bottom:6px">${t("syncDelayDesc")}</div>
     <input type="range" id="sync-s-delay" class="sync-slider" min="0" max="500" step="10" value="${settings.syncDelay}"/>
   </div>
-</div>
-
-`;
+</div>`;
 
     document.body.appendChild(panel);
     qs(panel, "#sync-cohost-row").style.display = "none";
@@ -1854,23 +1542,9 @@
       el.addEventListener("focus", () => { el.style.borderColor = "rgba(255,255,255,0.25)"; });
       el.addEventListener("blur",  () => { el.style.borderColor = "rgba(255,255,255,0.08)"; });
     }
+    addInputFocus("sync-ip");
     addInputFocus("sync-username");
     addInputFocus("sync-room-code");
-
-    const ipInput = qs(panel, "#sync-ip");
-    const ipEditBtn = qs(panel, "#sync-ip-edit");
-    ipEditBtn.addEventListener("mouseover", () => { ipEditBtn.style.opacity = "0.7"; });
-    ipEditBtn.addEventListener("mouseout",  () => { ipEditBtn.style.opacity = "1"; });
-    ipEditBtn.addEventListener("click", () => {
-      ipInput.removeAttribute("readonly");
-      ipInput.style.color  = "var(--spice-text,#fff)";
-      ipInput.style.cursor = "";
-      ipInput.addEventListener("focus", () => { ipInput.style.borderColor = "rgba(255,255,255,0.25)"; });
-      ipInput.addEventListener("blur",  () => { ipInput.style.borderColor = "rgba(255,255,255,0.08)"; });
-      ipEditBtn.style.display = "none";
-      ipInput.focus();
-      ipInput.select();
-    });
 
     const roomCodeInput = qs(panel, "#sync-room-code");
     roomCodeInput.addEventListener("input", () => {
@@ -2100,34 +1774,6 @@
   }
 
   // --------------------------------------------------------------------------
-  // Auto-detect Spotify display name as default username
-  // Source: https://spicetify.app/docs — Platform.UserAPI.getUser() and CosmosAsync
-  // --------------------------------------------------------------------------
-  async function tryGetSpotifyUsername() {
-    // Capture the real account display name even if a custom username is saved,
-    // because the admin gate keys off the Spotify account, not the editable field.
-    const apply = (name) => {
-      if (!name || typeof name !== "string" || !name.trim()) return false;
-      spotifyDisplayName = name.trim();
-      if (!localStorage.getItem("sync_username")) {
-        username = spotifyDisplayName.slice(0, 32);
-        localStorage.setItem("sync_username", username);
-      }
-      return true;
-    };
-    try {
-      // Method 1 (official): Platform.UserAPI.getUser() -> displayName
-      const user = await Spicetify.Platform.UserAPI.getUser();
-      if (apply(user?.displayName)) return;
-    } catch (_) {}
-    try {
-      // Method 2 (fallback): Spotify Web API via CosmosAsync (auth injected automatically)
-      const me = await Spicetify.CosmosAsync.get("https://api.spotify.com/v1/me");
-      apply(me?.display_name);
-    } catch (_) {}
-  }
-
-  // --------------------------------------------------------------------------
   // Auto-connect
   // --------------------------------------------------------------------------
   function maybeAutoConnect() {
@@ -2155,7 +1801,6 @@
         createToolbarButton();
         registerPlayerListeners();
         maybeAutoConnect();
-        tryGetSpotifyUsername();
       } else if (++attempts < 20) {
         setTimeout(tryInit, 500);
       }
