@@ -747,7 +747,8 @@
 
       let syncSeq = 0;
       socket.on("sync_state", async ({ uri, position, isPlaying, contextUri, sentAt } = {}) => {
-        if (role !== "guest" || !isSpotifyUri(uri) || !isSafeNum(position, 0, MAX_POSITION_MS)) return;
+        if (role !== "guest") return;
+        if (!isSpotifyUri(uri) || !isSafeNum(position, 0, MAX_POSITION_MS)) return;
         const seq = ++syncSeq;
         suppressFor(1500);
         try {
@@ -782,6 +783,7 @@
         if (role !== "host" || typeof guestId !== "string") return;
         const state = Player.data;
         if (!state?.item?.uri) return;
+        suppressFor(800);
         socket.emit("sync_state", {
           guestId,
           uri:        state.item.uri,
